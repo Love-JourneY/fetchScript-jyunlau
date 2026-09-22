@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,10 +38,12 @@ class Transcriber:
         binary: Path | str | None = None,
         transcripts_dir: Path | None = None,
         runner: object | None = None,
+        converter: object | None = None,
     ) -> None:
         self._binary = Path(binary).expanduser() if binary else None
         self._transcripts_dir = Path(transcripts_dir).expanduser() if transcripts_dir else None
         self._runner = runner
+        self._converter = converter
 
     @property
     def binary(self) -> Path | None:
@@ -76,10 +79,17 @@ class Transcriber:
         if not media.is_file():
             raise RuntimeError(f"要转写的文件不存在：{media}")
 
-        before = self._snapshot()
-        run = self._runner or self._default_runner
-        result = run([str(binary), "tx", str(media)], timeout)  # type: ignore[operator]
-        after = self._snapshot()
+        # ⚠️ 实测：b2t 的 Qwen3-ASR 走 sherpa-onnx，**只认 16kHz 单声道 WAV**
+        # （喂 .m4a 会报 `Expected chunk_id RIFF` 然后什么都没产出）⇒ 先转 WAV 再喂。
+        work_media, temp_wav = self._ensure_wav(media)
+        try:
+            before = self._snapshot()
+            run = self._runner or self._default_runner
+            result = run([str(binary), "tx", str(work_media)], timeout)  # type: ignore[operator]
+            after = self._snapshot()
+        finally:
+            if temp_wav is not None:
+                temp_wav.unlink(missing_ok=True)
 
         created = sorted(after - before, key=lambda p: p.stat().st_mtime, reverse=True)
         if not created:
@@ -101,6 +111,27 @@ class Transcriber:
             shutil.copy2(transcript, target)
             transcript = target
         return TranscriptResult(transcript=transcript)
+
+    def _ensure_wav(self, media: Path) -> tuple[Path, Path | None]:
+        """返回 (喂给 b2t 的文件, 需要事后删除的临时 wav)。WAV 原样返回。"""
+        if media.suffix.lower() == ".wav":
+            return media, None
+        converter = self._converter or self._convert_with_ffmpeg
+        temp_path = Path(tempfile.mkdtemp(prefix="yuanliu-asr-")) / f"{media.stem}.wav"
+        converter(media, temp_path)
+        return temp_path, temp_path
+
+    def _convert_with_ffmpeg(self, source: Path, target: Path) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("需要 ffmpeg 把音频转成 16kHz 单声道 WAV，但 PATH 里没有")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(  # noqa: S603
+            [ffmpeg, "-y", "-i", str(source), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(target)],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=1800,
+        )
+        if result.returncode != 0 or not target.exists():
+            raise RuntimeError(f"ffmpeg 转 WAV 失败：{(result.stderr or '').strip()[-200:]}")
 
     def _snapshot(self) -> set[Path]:
         directory = self.transcripts_dir
