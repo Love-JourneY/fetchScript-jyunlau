@@ -12,6 +12,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -235,6 +236,33 @@ def _rename_by_title(files: list[Path], *, title: str | None) -> list[Path]:
     return renamed
 
 
+def summarize_probe(payload: dict) -> dict:
+    """把不同引擎的探测结果**归一成人类看得懂的一行**（标题/时长/作者/媒体数）。
+
+    实测痛点：yt-dlp 返回的是它自己的 info dict，里面没有 `play_urls`/`meta` 字段，
+    直接透传给前端就变成 `play_count: 0, meta: null` —— 看着像"没做"，其实拿到了。
+    """
+    info = payload.get("info") if isinstance(payload.get("info"), dict) else payload
+    info = info or {}
+    meta = info.get("meta") if isinstance(info.get("meta"), dict) else None
+    play = info.get("play_urls") or []
+    images = info.get("images") or []
+    title = info.get("title") or (meta or {}).get("desc") or info.get("fulltitle")
+    duration = info.get("duration") or (meta or {}).get("duration")
+    if isinstance(duration, (int, float)) and duration > 1000:  # 毫秒 → 秒
+        duration = duration / 1000
+    return {
+        "engine": payload.get("engine") or info.get("extractor"),
+        "title": title,
+        "uploader": info.get("uploader") or info.get("channel") or (meta or {}).get("author"),
+        "duration": round(duration, 1) if isinstance(duration, (int, float)) else None,
+        "thumbnail": info.get("thumbnail"),
+        "media_count": len(play) or (1 if info.get("url") or info.get("formats") else 0),
+        "image_count": len(images),
+        "webpage_url": info.get("webpage_url"),
+    }
+
+
 def _existing_cookies(cookies: Path | None) -> Path | None:
     """cookies 路径不存在就当没有 —— 否则会把 `--cookies /bad/path` 喂给引擎，全线失败。
     （实测事故：install.sh 以 root 跑，$HOME 展开成 /root，服务一直拿着 /root/.cache/...）"""
@@ -253,6 +281,7 @@ def download(
     transcribe: bool = False,
     keep_media: bool = True,
     audio_only: bool = False,
+    on_progress: Callable[[float], None] | None = None,
 ) -> DownloadOutcome:
     """下载到 ``outdir``，可选接着转文字。
 
@@ -282,7 +311,12 @@ def download(
     for engine in usable:
         try:
             files = engine.download(
-                resolved, outdir, cookies=cookies, timeout=timeout, audio_only=audio_only
+                resolved,
+                outdir,
+                cookies=cookies,
+                timeout=timeout,
+                audio_only=audio_only,
+                on_progress=on_progress,
             )
         except (EngineFailed, EngineUnavailable) as exc:
             errors.append(f"{engine.name}: {exc}")
@@ -291,6 +325,8 @@ def download(
             files = _rename_by_title(files, title=_title_hint(resolved, engine.name))
             outcome = DownloadOutcome(plan=current, engine=engine.name, files=files)
             if transcribe:
+                if on_progress is not None:
+                    on_progress(0.95)  # 阶段 3：转文字（CPU 上最慢的一段）
                 _transcribe_into(outcome, outdir)
                 if not keep_media and not outcome.transcribe_error:
                     # 只要文字：**转写成功才删**（失败时必须留着媒体，人还能自己再试）

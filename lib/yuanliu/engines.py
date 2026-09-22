@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 __all__ = [
     "Engine",
@@ -70,6 +72,7 @@ class Engine(Protocol):
         cookies: Path | None = None,
         timeout: float = 900.0,
         audio_only: bool = False,
+        on_progress: Callable[[float], None] | None = None,
     ) -> list[Path]: ...
 
 
@@ -83,6 +86,51 @@ def resolve_binary(name: str, env_var: str, candidates: Sequence[str]) -> str | 
         if path.exists() and os.access(path, os.X_OK):
             return str(path)
     return shutil.which(name)
+
+
+_PERCENT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+
+
+def _stream(
+    cmd: Sequence[str],
+    *,
+    timeout: float,
+    on_progress: Callable[[float], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """跑子进程并**边跑边报进度**（Nija 要进度条）。
+
+    yt-dlp 用 ``--progress-template``/``--newline``，lux 自带百分比进度条 —— 两者都能从
+    输出里抠出 ``NN%``。抠不到就不报（前端显示不确定态），绝不假装有进度。
+    """
+    process = subprocess.Popen(  # noqa: S603
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    lines: list[str] = []
+    deadline = time.monotonic() + timeout
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
+            lines.append(line)
+            if on_progress is not None:
+                match = _PERCENT_RE.search(line)
+                if match:
+                    try:
+                        on_progress(min(1.0, max(0.0, float(match.group(1)) / 100.0)))
+                    except ValueError:
+                        pass
+            if time.monotonic() > deadline:
+                process.kill()
+                raise subprocess.TimeoutExpired(list(cmd), timeout)
+        returncode = process.wait()
+    finally:
+        if process.poll() is None:
+            process.kill()
+    return subprocess.CompletedProcess(list(cmd), returncode, "".join(lines), "")
 
 
 def _run(cmd: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -143,14 +191,16 @@ class YtDlpEngine:
         cookies: Path | None = None,
         timeout: float = 900.0,
         audio_only: bool = False,
+        on_progress: Callable[[float], None] | None = None,
     ) -> list[Path]:
         binary = self._require()
         outdir.mkdir(parents=True, exist_ok=True)
         before = set(outdir.iterdir())
+        progress_args = ["--newline", "--progress-template", "download:%(progress._percent_str)s"]
         if audio_only:
             # 只要文字时**别下整片视频**：只取最佳音轨（省带宽、省盘、可直喂 ASR）
             cmd = [
-                binary, "--no-warnings", "--no-playlist", "-f", "ba/b",
+                binary, "--no-warnings", "--no-playlist", *progress_args, "-f", "ba/b",
                 "-o", str(outdir / "%(title)s.%(ext)s"), url,
             ]
         else:
@@ -158,6 +208,7 @@ class YtDlpEngine:
                 binary,
                 "--no-warnings",
                 "--no-playlist",
+                *progress_args,
                 "-f",
                 "bv*+ba/b",
                 "--merge-output-format",
@@ -168,9 +219,9 @@ class YtDlpEngine:
             ]
         if cookies is not None:
             cmd += ["--cookies", str(cookies)]
-        result = _run(cmd, timeout=timeout)
+        result = _stream(cmd, timeout=timeout, on_progress=on_progress)
         if result.returncode != 0:
-            raise EngineFailed(f"yt-dlp 下载失败：{(result.stderr or '').strip()[:500]}")
+            raise EngineFailed(f"yt-dlp 下载失败：{(result.stdout or '').strip()[-500:]}")
         return sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
 
 
@@ -215,6 +266,7 @@ class LuxEngine:
         cookies: Path | None = None,
         timeout: float = 900.0,
         audio_only: bool = False,
+        on_progress: Callable[[float], None] | None = None,
     ) -> list[Path]:
         binary = self._require()
         outdir.mkdir(parents=True, exist_ok=True)
@@ -225,9 +277,9 @@ class LuxEngine:
         if cookies is not None:
             cmd += ["-c", str(cookies)]
         cmd.append(url)
-        result = _run(cmd, timeout=timeout)
+        result = _stream(cmd, timeout=timeout, on_progress=on_progress)
         if result.returncode != 0:
-            raise EngineFailed(f"lux 下载失败：{(result.stderr or '').strip()[:500]}")
+            raise EngineFailed(f"lux 下载失败：{(result.stdout or '').strip()[-500:]}")
         return sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
 
 

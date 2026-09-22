@@ -169,6 +169,7 @@ class BrowserEngine:
         cookies: Path | None = None,
         timeout: float = 900.0,
         audio_only: bool = False,  # 浏览器只拿得到视频流；只要文字时由上层转写完删片
+        on_progress: Callable[[float], None] | None = None,
     ) -> list[Path]:
         # 嗅探本质是"跟平台赛跑"，下载这条路上失败一次不奇怪 ⇒ 多给两次机会
         data = self.sniff(url, cookies=cookies, attempts=5, timeout=timeout)

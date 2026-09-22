@@ -101,3 +101,67 @@ def test_index_without_token_warns(server) -> None:
     assert "没带 token" in html
 
 
+
+
+def test_probe_summary_is_human_readable() -> None:
+    """yt-dlp 的 info dict 要归一成标题/时长/作者 —— 否则前端显示成"没做"（实测痛点）。"""
+    from yuanliu.resolve import summarize_probe
+
+    summary = summarize_probe(
+        {
+            "engine": "yt-dlp",
+            "info": {
+                "title": "AI 正在改写开源安全规则",
+                "duration": 132.052,
+                "uploader": "某某",
+                "webpage_url": "https://www.bilibili.com/video/BV1xx411c7XD",
+            },
+        }
+    )
+    assert summary["title"] == "AI 正在改写开源安全规则"
+    assert summary["duration"] == 132.1
+    assert summary["uploader"] == "某某"
+
+
+def test_probe_summary_for_browser_engine() -> None:
+    from yuanliu.resolve import summarize_probe
+
+    summary = summarize_probe(
+        {
+            "engine": "browser",
+            "info": {"meta": {"desc": "笔记标题", "author": "作者", "duration": 13866}, "play_urls": ["u"], "images": ["a", "b"]},
+        }
+    )
+    assert summary["title"] == "笔记标题"
+    assert summary["duration"] == 13.9  # 毫秒 → 秒
+    assert summary["media_count"] == 1
+    assert summary["image_count"] == 2
+
+
+def test_job_reports_progress(tmp_path: Path, monkeypatch) -> None:
+    """任务要有进度与阶段，前端才能画进度条。"""
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    app = YuanliuServer(config)
+    seen = {}
+
+    def fake_download(text, outdir, *, cookies=None, transcribe=False, keep_media=True, audio_only=False, on_progress=None):
+        from yuanliu.resolve import DownloadOutcome, plan
+
+        if on_progress:
+            on_progress(0.42)
+            seen["mid"] = True
+        (Path(outdir) / "v.mp4").write_bytes(b"x")
+        return DownloadOutcome(plan=plan("https://www.bilibili.com/video/BV1xx411c7XD"), engine="fake",
+                               files=[Path(outdir) / "v.mp4"])
+
+    monkeypatch.setattr("yuanliu.server.download_media", fake_download)
+    job = app.submit("https://www.bilibili.com/video/BV1xx411c7XD")
+    import time
+
+    for _ in range(100):
+        if job.status in {"done", "failed"}:
+            break
+        time.sleep(0.05)
+    assert seen.get("mid")
+    assert job.progress == 1.0
+    assert job.as_dict()["stage"] == "done"

@@ -25,7 +25,14 @@ from typing import Any
 
 from yuanliu import __version__
 from yuanliu.engines import EngineFailed, EngineUnavailable
-from yuanliu.resolve import NoEngineAvailable, ResolveError, download as download_media, plan, probe
+from yuanliu.resolve import (
+    NoEngineAvailable,
+    ResolveError,
+    download as download_media,
+    plan,
+    probe,
+    summarize_probe,
+)
 
 __all__ = ["ServerConfig", "YuanliuServer", "main", "MAX_CONCURRENT_JOBS"]
 
@@ -66,6 +73,8 @@ class Job:
     text: str
     mode: str = MODE_MEDIA
     status: str = "queued"  # queued|running|done|failed
+    stage: str = ""
+    progress: float = 0.0
     engine: str = ""
     files: list[str] = field(default_factory=list)
     transcripts: list[str] = field(default_factory=list)
@@ -79,6 +88,8 @@ class Job:
             "text": self.text[:120],
             "mode": self.mode,
             "status": self.status,
+            "stage": self.stage,
+            "progress": round(self.progress, 3),
             "engine": self.engine,
             "files": [Path(f).name for f in self.files] + [Path(f).name for f in self.transcripts],
             "error": self.error,
@@ -113,6 +124,12 @@ class YuanliuServer:
                     break
             time.sleep(0.5)
         job.status = "running"
+        job.stage = "downloading"
+        job.progress = 0.0
+
+        def report(value: float) -> None:
+            job.progress = min(1.0, max(job.progress, float(value)))
+
         try:
             outcome = download_media(
                 job.text,
@@ -121,8 +138,11 @@ class YuanliuServer:
                 transcribe=job.mode in {MODE_BOTH, MODE_TEXT},
                 keep_media=job.mode != MODE_TEXT,
                 audio_only=job.mode == MODE_TEXT,
+                on_progress=report,
             )
             job.engine = outcome.engine
+            job.stage = "done"
+            job.progress = 1.0
             job.files = [str(path) for path in outcome.files]
             job.transcripts = [str(path) for path in outcome.transcripts]
             if job.mode in {MODE_BOTH, MODE_TEXT} and outcome.transcribe_error:
@@ -130,9 +150,11 @@ class YuanliuServer:
             job.status = "done"
         except (ResolveError, EngineFailed, EngineUnavailable) as exc:
             job.status = "failed"
+            job.stage = "failed"
             job.error = str(exc)[:500]
         except Exception as exc:  # noqa: BLE001 - 服务端不能让单任务炸掉线程
             job.status = "failed"
+            job.stage = "failed"
             job.error = f"{type(exc).__name__}: {exc}"[:500]
         finally:
             job.finished_at = time.time()
@@ -156,12 +178,7 @@ class YuanliuServer:
         }
         try:
             info = probe(text, timeout=240)
-            payload["info"] = {
-                "engine": info.get("engine"),
-                "play_count": len(info.get("play_urls") or []),
-                "images": len(info.get("images") or []),
-                "meta": info.get("info", {}).get("meta") if isinstance(info.get("info"), dict) else info.get("meta"),
-            }
+            payload["info"] = summarize_probe(info)
         except Exception as exc:  # noqa: BLE001 - 探测失败也要给出路线信息
             payload["probe_error"] = str(exc)[:300]
         return payload
@@ -191,6 +208,11 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
  .ok{color:#34d399}.bad{color:#f87171}.run{color:#fbbf24}
  a{color:#60a5fa;word-break:break-all}
  pre{white-space:pre-wrap;font-size:13px;color:#cbd5e1}
+ .bar{height:8px;border-radius:99px;background:#333;overflow:hidden;margin:6px 0}
+ .bar > i{display:block;height:100%;background:#3b82f6;width:0;transition:width .4s}
+ .bar.indet > i{width:35%;animation:slide 1.2s infinite}
+ @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+ .stage{font-size:13px;color:#9ca3af}
 </style></head><body>
 <h1>yuanliu <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
 <div id="banner">__BANNER__</div>
@@ -240,7 +262,13 @@ async function load(){
   (j.jobs||[]).forEach(x=>{
     const cls = x.status==='done'?'ok':(x.status==='failed'?'bad':'run');
     const modeLabel = {media:'只要视频', both:'视频+文字', text:'只要文字'}[x.mode] || x.mode;
+    const stageLabel = {queued:'排队中', downloading:'下载中', done:'完成', failed:'失败'}[x.stage] || x.stage || x.status;
     let html = '<div class="card"><div>['+x.status+'] <span class="'+cls+'">'+x.engine+'</span> <b>'+modeLabel+'</b> '+x.text.slice(0,50)+'</div>';
+    if (x.status === 'running' || x.status === 'queued') {
+      const pct = Math.round((x.progress||0)*100);
+      html += '<div class="bar'+(pct>0?'':' indet')+'"><i style="width:'+(pct>0?pct:35)+'%"></i></div>'
+            + '<div class="stage">'+stageLabel+(pct>0?(' · '+pct+'%'):'')+'</div>';
+    }
     if(x.error) html += '<pre>'+x.error.replace(/[<>]/g,'')+'</pre>';
     (x.files||[]).forEach(f=>{ html += '<div><a href="/files/'+encodeURIComponent(f)+(K?('?k='+encodeURIComponent(K)):'')+'">'+f+'</a></div>'; });
     el.innerHTML += html+'</div>';
