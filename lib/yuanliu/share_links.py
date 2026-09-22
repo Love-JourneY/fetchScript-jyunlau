@@ -24,6 +24,7 @@ __all__ = [
     "detect_platform",
     "canonicalize_url",
     "parse_share_text",
+    "parse_input",
     "is_short_url",
     "resolve_short_url",
     "extract_bv",
@@ -263,6 +264,39 @@ def resolve_short_url(
 def _is_login_wall(url: str) -> bool:
     path = (urlparse(url).path or "").lower()
     return "/login" in path or path.endswith("/login")
+
+
+# 无 scheme 的裸域名（用户常直接复制 `www.bilibili.com/video/BV…`）
+_BARE_HOST_RE = re.compile(
+    r"(?:[a-z0-9-]+\.)+(?:com|cn|tv|net|org)(?:/[^\s，。、；：！？【】（）()<>\"'「」『』]*)?",
+    re.IGNORECASE,
+)
+
+
+def parse_input(text: str) -> ShareLink:
+    """比 :func:`parse_share_text` 宽松：**整段文案 → 裸 BV 号 → 无 scheme 的域名**。
+
+    Nija 实测诉求：直接贴 `BV198tR6EEit` 也要认（他经常手上有裸号）。
+    """
+    try:
+        return parse_share_text(text)
+    except ShareLinkError:
+        pass
+
+    value = (text or "").strip()
+    # 先试"无 scheme 的域名"（能保住 ?p=2 这类参数），再退到裸 BV 号
+    match = _BARE_HOST_RE.search(value)
+    if match:
+        url = f"https://{match.group(0)}"
+        platform = detect_platform(url)
+        return ShareLink(raw=text, url=canonicalize_url(url, platform), platform=platform, is_short=is_short_url(url))
+
+    bv = extract_bv(value)
+    if bv:
+        url = canonicalize_url(f"https://www.bilibili.com/video/{bv}", "bilibili")
+        return ShareLink(raw=text, url=url, platform="bilibili", is_short=False)
+
+    raise ShareLinkError("这段文字里既没有链接，也没有可识别的 BV 号")
 
 
 def iter_detected_platforms(texts: Iterable[str]) -> list[str]:

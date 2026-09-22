@@ -128,7 +128,9 @@ class YuanliuServer:
         job.progress = 0.0
 
         def report(value: float) -> None:
-            job.progress = min(1.0, max(job.progress, float(value)))
+            job.progress = min(1.0, max(0.0, float(value)))
+            if 0.8 <= job.progress < 1.0:
+                job.stage = "transcribing"
 
         try:
             outcome = download_media(
@@ -262,7 +264,7 @@ async function load(){
   (j.jobs||[]).forEach(x=>{
     const cls = x.status==='done'?'ok':(x.status==='failed'?'bad':'run');
     const modeLabel = {media:'只要视频', both:'视频+文字', text:'只要文字'}[x.mode] || x.mode;
-    const stageLabel = {queued:'排队中', downloading:'下载中', done:'完成', failed:'失败'}[x.stage] || x.stage || x.status;
+    const stageLabel = {queued:'排队中', downloading:'下载中', transcribing:'转文字中', done:'完成', failed:'失败'}[x.stage] || x.stage || x.status;
     let html = '<div class="card"><div>['+x.status+'] <span class="'+cls+'">'+x.engine+'</span> <b>'+modeLabel+'</b> '+x.text.slice(0,50)+'</div>';
     if (x.status === 'running' || x.status === 'queued') {
       const pct = Math.round((x.progress||0)*100);

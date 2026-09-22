@@ -23,7 +23,7 @@ from yuanliu.engines import (
     engines_for_platform,
     pick_engines,
 )
-from yuanliu.share_links import ShareLink, ShareLinkError, parse_share_text, resolve_short_url
+from yuanliu.share_links import ShareLink, ShareLinkError, parse_input, resolve_short_url
 
 __all__ = [
     "ResolveError",
@@ -122,7 +122,7 @@ class DownloadOutcome:
 def plan(text: str, *, only_available: bool = True) -> Plan:
     """只做离线决策：判平台、给规范化链接与候选引擎，**不发网络请求**。"""
     try:
-        link = parse_share_text(text)
+        link = parse_input(text)   # 宽松入口：整段文案 / 裸 BV 号 / 无 scheme 域名都认
     except ShareLinkError as exc:
         raise UnsupportedPlatform(str(exc)) from exc
 
@@ -307,6 +307,13 @@ def download(
             f"「{current.link.platform}」需要这些引擎之一：{current.engines or '(无)'}；本机都没有。"
         )
 
+    # 进度语义：下载占 0~0.8（要转写时），转写 0.8~1.0；只要视频时下载直接 0~1
+    download_span = 0.8 if transcribe else 1.0
+
+    def engine_progress(value: float) -> None:
+        if on_progress is not None:
+            on_progress(min(download_span, max(0.0, value) * download_span))
+
     errors: list[str] = []
     for engine in usable:
         try:
@@ -316,7 +323,7 @@ def download(
                 cookies=cookies,
                 timeout=timeout,
                 audio_only=audio_only,
-                on_progress=on_progress,
+                on_progress=engine_progress,
             )
         except (EngineFailed, EngineUnavailable) as exc:
             errors.append(f"{engine.name}: {exc}")
@@ -326,8 +333,10 @@ def download(
             outcome = DownloadOutcome(plan=current, engine=engine.name, files=files)
             if transcribe:
                 if on_progress is not None:
-                    on_progress(0.95)  # 阶段 3：转文字（CPU 上最慢的一段）
+                    on_progress(0.85)  # 阶段 3：转文字（CPU 上最慢的一段）
                 _transcribe_into(outcome, outdir)
+                if on_progress is not None:
+                    on_progress(1.0)
                 if not keep_media and not outcome.transcribe_error:
                     # 只要文字：**转写成功才删**（失败时必须留着媒体，人还能自己再试）
                     outcome.discarded = _discard_media(outcome.files)

@@ -31,3 +31,36 @@ def test_share_text_with_traditional_chinese() -> None:
     link = parse_share_text("原來一切早已雙向奔赴 https://xhslink.cn/o/2rSCCq0xDCR 複製後開啟小紅書查看筆記")
     assert link.platform == "xiaohongshu"
     assert link.is_short is True
+
+
+def test_parse_input_accepts_bare_bv() -> None:
+    """Nija 实测诉求：直接贴裸 BV 号也要认。"""
+    from yuanliu.share_links import parse_input
+
+    link = parse_input("BV198tR6EEit")
+    assert link.platform == "bilibili"
+    assert link.url == "https://www.bilibili.com/video/BV198tR6EEit"
+
+
+def test_parse_input_accepts_scheme_less_host() -> None:
+    from yuanliu.share_links import parse_input
+
+    link = parse_input("www.bilibili.com/video/BV198tR6EEit?p=2")
+    assert link.platform == "bilibili"
+    assert link.url == "https://www.bilibili.com/video/BV198tR6EEit?p=2"
+
+
+def test_parse_input_still_rejects_plain_text() -> None:
+    import pytest
+
+    from yuanliu.share_links import ShareLinkError, parse_input
+
+    with pytest.raises(ShareLinkError):
+        parse_input("今天天气不错")
+
+
+def test_parse_input_prefers_share_text_url() -> None:
+    from yuanliu.share_links import parse_input
+
+    link = parse_input("看看这个 https://v.douyin.com/iRNBho6G/ 复制此链接")
+    assert link.platform == "douyin"
