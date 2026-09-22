@@ -1,0 +1,22 @@
+[Unit]
+Description=yuanliu —— 分享链接 → 本地媒体（多引擎路由 + 浏览器嗅探）
+Documentation=file:/opt/yuanliu/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bubu12
+Group=wheel
+Environment=PYTHONPATH=/opt/yuanliu/lib
+EnvironmentFile=-/etc/yuanliu/env
+EnvironmentFile=-/etc/yuanliu/token
+ExecStart=/usr/bin/python3 -m yuanliu.server
+Restart=on-failure
+RestartSec=3
+# 浏览器嗅探要读 ~/dev 下的 Playwright 与 ~/.cache 里的 Chromium ⇒ 不能用 ProtectHome
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

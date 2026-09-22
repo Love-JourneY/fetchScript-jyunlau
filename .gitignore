@@ -1,0 +1,13 @@
+# 运行时二进制：用 tools/get-lux.sh 下载（不把 22MB 二进制塞进仓库）
+vendor/lux
+vendor/*.tar.gz
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# 嗅探临时产物
+*.sniff-download.bin
+# 敏感物（永不入库）
+cookies.txt
+token
+.env

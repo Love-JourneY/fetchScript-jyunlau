@@ -1,0 +1,405 @@
+"""yuanliu 常驻服务：给平板/手机用的"贴链接就下载"网页 + JSON API。
+
+零第三方依赖（标准库 http.server）—— 离线自洽、随包可迁移，不需要 pip 装任何东西。
+浏览器嗅探那部分仍然调 `tools/sniff.cjs`（node + Playwright），那是可选能力。
+
+安全模型（LAN 场景，默认 fail-closed）：
+- 必须带 token：`?k=<token>` 或 `X-Token` 头；token 放 `/etc/yuanliu/env`（600 可见范围由 systemd 控制）。
+- `/files/<name>` 只服务**白名单扩展名**且**必须在状态位目录内**（防穿越）。
+- 不做"匿名开放"——本机 `/etc/yuanliu/env` 里有 token，服务可触发下载，不能无条件裸奔。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+import time
+import urllib.parse
+import uuid
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+from yuanliu import __version__
+from yuanliu.engines import EngineFailed, EngineUnavailable
+from yuanliu.resolve import NoEngineAvailable, ResolveError, download as download_media, plan, probe
+
+__all__ = ["ServerConfig", "YuanliuServer", "main", "MAX_CONCURRENT_JOBS"]
+
+MAX_CONCURRENT_JOBS = 2
+FILE_ALLOWED_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4a", ".mp3", ".jpg", ".jpeg", ".png", ".webp", ".txt"}
+
+
+@dataclass(slots=True)
+class ServerConfig:
+    bind: str = "0.0.0.0"
+    port: int = 8901
+    token: str = ""
+    media_dir: Path = Path("/var/lib/yuanliu/media")
+    cookies: Path | None = None
+
+    @classmethod
+    def from_env(cls) -> "ServerConfig":
+        state = Path(os.getenv("YUANLIU_STATE_DIR", "/var/lib/yuanliu")).expanduser()
+        cookies = os.getenv("YUANLIU_COOKIES", "").strip()
+        return cls(
+            bind=os.getenv("YUANLIU_BIND", "0.0.0.0"),
+            port=int(os.getenv("YUANLIU_PORT", "8901")),
+            token=os.getenv("YUANLIU_TOKEN", "").strip(),
+            media_dir=Path(os.getenv("YUANLIU_MEDIA_DIR", state / "media")).expanduser(),
+            cookies=Path(cookies).expanduser() if cookies else None,
+        )
+
+
+@dataclass
+class Job:
+    id: str
+    text: str
+    transcribe: bool = False
+    status: str = "queued"  # queued|running|done|failed
+    engine: str = ""
+    files: list[str] = field(default_factory=list)
+    transcripts: list[str] = field(default_factory=list)
+    error: str = ""
+    created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "text": self.text[:120],
+            "transcribe": self.transcribe,
+            "status": self.status,
+            "engine": self.engine,
+            "files": [Path(f).name for f in self.files] + [Path(f).name for f in self.transcripts],
+            "error": self.error,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+        }
+
+
+class YuanliuServer:
+    def __init__(self, config: ServerConfig) -> None:
+        self.config = config
+        self.jobs: dict[str, Job] = {}
+        self._lock = threading.Lock()
+        self._running = 0
+        config.media_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 任务 ----
+    def submit(self, text: str, *, transcribe: bool = False) -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], text=text, transcribe=transcribe)
+        with self._lock:
+            self.jobs[job.id] = job
+        threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
+        return job
+
+    def _run_job(self, job: Job) -> None:
+        while True:
+            with self._lock:
+                if self._running < MAX_CONCURRENT_JOBS:
+                    self._running += 1
+                    break
+            time.sleep(0.5)
+        job.status = "running"
+        try:
+            outcome = download_media(
+                job.text,
+                self.config.media_dir,
+                cookies=self.config.cookies,
+                transcribe=job.transcribe,
+            )
+            job.engine = outcome.engine
+            job.files = [str(path) for path in outcome.files]
+            job.transcripts = [str(path) for path in outcome.transcripts]
+            if job.transcribe and outcome.transcribe_error:
+                job.error = f"转文字失败（视频已下好）：{outcome.transcribe_error}"
+            job.status = "done"
+        except (ResolveError, EngineFailed, EngineUnavailable) as exc:
+            job.status = "failed"
+            job.error = str(exc)[:500]
+        except Exception as exc:  # noqa: BLE001 - 服务端不能让单任务炸掉线程
+            job.status = "failed"
+            job.error = f"{type(exc).__name__}: {exc}"[:500]
+        finally:
+            job.finished_at = time.time()
+            with self._lock:
+                self._running -= 1
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            jobs = sorted(self.jobs.values(), key=lambda j: j.created_at, reverse=True)
+        return [job.as_dict() for job in jobs[:50]]
+
+    # ---- 业务 ----
+    def resolve(self, text: str) -> dict[str, Any]:
+        current = plan(text)
+        payload: dict[str, Any] = {
+            "platform": current.platforms,
+            "url": current.link.url,
+            "is_short": current.link.is_short,
+            "route": list(current.engines),
+            "available": list(current.available),
+        }
+        try:
+            info = probe(text, timeout=240)
+            payload["info"] = {
+                "engine": info.get("engine"),
+                "play_count": len(info.get("play_urls") or []),
+                "images": len(info.get("images") or []),
+                "meta": info.get("info", {}).get("meta") if isinstance(info.get("info"), dict) else info.get("meta"),
+            }
+        except Exception as exc:  # noqa: BLE001 - 探测失败也要给出路线信息
+            payload["probe_error"] = str(exc)[:300]
+        return payload
+
+    def resolve_file(self, name: str) -> Path | None:
+        safe = Path(name).name
+        if Path(safe).suffix.lower() not in FILE_ALLOWED_SUFFIXES:
+            return None
+        candidate = (self.config.media_dir / safe).resolve()
+        if not str(candidate).startswith(str(self.config.media_dir.resolve())):
+            return None
+        return candidate if candidate.is_file() else None
+
+
+PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>yuanliu</title>
+<style>
+ :root{color-scheme:dark}
+ body{margin:0;padding:16px;font:16px/1.5 system-ui,-apple-system,"Noto Sans CJK SC",sans-serif;background:#111;color:#eee}
+ h1{font-size:20px;margin:0 0 12px}
+ textarea{width:100%;min-height:96px;padding:12px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#eee;font-size:16px}
+ button{margin:8px 8px 8px 0;padding:12px 18px;font-size:16px;border-radius:10px;border:0;background:#3b82f6;color:#fff}
+ button.sec{background:#374151}
+ .row{display:flex;gap:22px;flex-wrap:wrap;margin:12px 0;font-size:14px;color:#9ca3af}
+ .card{border:1px solid #333;border-radius:10px;padding:12px;margin:10px 0;background:#181818}
+ .ok{color:#34d399}.bad{color:#f87171}.run{color:#fbbf24}
+ a{color:#60a5fa;word-break:break-all}
+ pre{white-space:pre-wrap;font-size:13px;color:#cbd5e1}
+</style></head><body>
+<h1>yuanliu <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
+<div id="banner">__BANNER__</div>
+<textarea id="t" placeholder="把 App 里复制的分享文案整段贴进来（含短链也行）"></textarea>
+<div>
+ <button onclick="go('resolve')">解析（不下载）</button>
+ <button onclick="go('download')">下载</button>
+ <button class="sec" onclick="load()">刷新列表</button>
+</div>
+<div class="row"><label><input type="checkbox" id="tx"> 下载后转文字（本机 Qwen3-ASR，慢一点）</label></div>
+<div class="row"><span>平台/路线会显示在下面</span><span id="k"></span></div>
+<div id="out"></div>
+<div id="jobs"></div>
+<script>
+const K = new URLSearchParams(location.search).get('k') || '';
+document.getElementById('k').textContent = K ? '已带 token' : '⚠ 无 token（可能 401）';
+async function api(path, body){
+  const r = await fetch(path + (K?('?k='+encodeURIComponent(K)):''), {method:'POST',
+    headers:{'Content-Type':'application/json','X-Token':K}, body: JSON.stringify(body||{})});
+  const j = await r.json().catch(()=>({error:'非 JSON 响应', status:r.status}));
+  if (r.status === 401) {
+    document.getElementById('banner').innerHTML =
+      '<div class="card"><b class="bad">token 不对或已过期</b>：你打开的链接里的 k 不是这台机器当前的 token。'
+      + '请在电脑上执行 <code>cat /etc/yuanliu/token</code>，用里面那个值重新拼 URL。</div>';
+  }
+  return {status:r.status, j};
+}
+async function go(kind){
+  const text = document.getElementById('t').value.trim();
+  if(!text) return;
+  document.getElementById('out').innerHTML = '<div class="card">处理中…</div>';
+  const body = {text};
+  const tx = document.getElementById('tx');
+  if (kind === 'download' && tx && tx.checked) body.transcribe = true;
+  const {status,j} = await api('/api/'+kind, body);
+  document.getElementById('out').innerHTML = '<div class="card"><pre>'+JSON.stringify(j,null,1).replace(/[<>]/g,'')+'</pre></div>';
+  if(kind==='download') setTimeout(load, 1500);
+}
+async function load(){
+  const r = await fetch('/api/jobs'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
+  const j = await r.json();
+  const el = document.getElementById('jobs'); el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">下载记录</h1>';
+  (j.jobs||[]).forEach(x=>{
+    const cls = x.status==='done'?'ok':(x.status==='failed'?'bad':'run');
+    let html = '<div class="card"><div>['+x.status+'] <span class="'+cls+'">'+x.engine+'</span> '+x.text.slice(0,60)+'</div>';
+    if(x.error) html += '<pre>'+x.error.replace(/[<>]/g,'')+'</pre>';
+    (x.files||[]).forEach(f=>{ html += '<div><a href="/files/'+encodeURIComponent(f)+(K?('?k='+encodeURIComponent(K)):'')+'">'+f+'</a></div>'; });
+    el.innerHTML += html+'</div>';
+  });
+}
+load();
+</script></body></html>"""
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server_version = f"yuanliu/{__version__}"
+    app: YuanliuServer
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # 保持 journal 干净
+        if os.getenv("YUANLIU_VERBOSE"):
+            super().log_message(fmt, *args)
+
+    # ---- helpers ----
+    def _token_ok(self, query: dict[str, list[str]]) -> bool:
+        expected = self.app.config.token
+        if not expected:
+            return False  # fail-closed：没配 token 就不开
+        supplied = ""
+        if query.get("k"):
+            supplied = query["k"][0]
+        elif self.headers.get("X-Token"):
+            supplied = self.headers["X-Token"]
+        return supplied == expected
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code: int, payload: dict[str, Any]) -> None:
+        self._send(code, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+
+    def _body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return {}
+
+    # ---- routes ----
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path in ("/", "/index.html"):
+            if self._token_ok(query):
+                banner = '<div class="card ok">token 有效，可以直接用。</div>'
+            elif query.get("k"):
+                banner = ('<div class="card"><b class="bad">token 无效或已过期</b>'
+                          '（多半用了旧链接）。请在电脑上跑 <code>cat /etc/yuanliu/token</code>，'
+                          '用里面的值重新拼 <code>?k=…</code>。</div>')
+            else:
+                banner = ('<div class="card"><b class="run">链接里没带 token</b>：请在 URL 后面加 '
+                          '<code>?k=&lt;token&gt;</code>，否则解析/下载都会 401。</div>')
+            body = (
+                PAGE.replace("__VERSION__", __version__)
+                .replace("__BANNER__", banner)
+                .encode()
+            )
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/health":
+            self._json(200, {"ok": True, "version": __version__})
+            return
+        if not self._token_ok(query):
+            self._json(401, {"error": "需要 token（?k=… 或 X-Token）"})
+            return
+        if parsed.path == "/api/jobs":
+            self._json(200, {"jobs": self.app.snapshot()})
+            return
+        if parsed.path.startswith("/files/"):
+            name = urllib.parse.unquote(parsed.path[len("/files/") :])
+            path = self.app.resolve_file(name)
+            if path is None:
+                self._json(404, {"error": "文件不存在或类型不允许"})
+                return
+            self._send(200, path.read_bytes(), "application/octet-stream")
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        if not self._token_ok(query):
+            self._json(401, {"error": "需要 token（?k=… 或 X-Token）"})
+            return
+        payload = self._body()
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            self._json(400, {"error": "text 不能为空"})
+            return
+        if parsed.path == "/api/resolve":
+            try:
+                self._json(200, self.app.resolve(text))
+            except ResolveError as exc:
+                self._json(400, {"error": str(exc), "kind": type(exc).__name__})
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            return
+        if parsed.path == "/api/download":
+            job = self.app.submit(text, transcribe=bool(payload.get("transcribe")))
+            self._json(202, {"job": job.as_dict()})
+            return
+        self._json(404, {"error": "not found"})
+
+
+def build_server(config: ServerConfig) -> ThreadingHTTPServer:
+    app = YuanliuServer(config)
+    handler = type("BoundHandler", (_Handler,), {"app": app})
+    httpd = ThreadingHTTPServer((config.bind, config.port), handler)
+    httpd.daemon_threads = True
+    return httpd
+
+
+def _lan_addresses() -> list[str]:
+    import socket
+
+    found: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(info[4][0])
+    except OSError:
+        pass
+    try:  # 只靠 hostname 可能拿不到，补一条"连出去看源地址"
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.168.31.1", 9))
+            found.add(sock.getsockname()[0])
+    except OSError:
+        pass
+    return sorted(ip for ip in found if not ip.startswith("127."))
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="yuanliu serve", description="常驻服务（网页 + JSON API）")
+    parser.add_argument("--bind", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--token", default=None)
+    args = parser.parse_args(argv or [])
+
+    config = ServerConfig.from_env()
+    if args.bind:
+        config.bind = args.bind
+    if args.port:
+        config.port = args.port
+    if args.token is not None:
+        config.token = args.token
+
+    if not config.token:
+        print("拒绝启动：没有 token（设 YUANLIU_TOKEN，或 install.sh 生成 /etc/yuanliu/env）")
+        return 2
+
+    httpd = build_server(config)
+    print(f"yuanliu 服务已起：http://{config.bind}:{config.port}/?k={config.token}")
+    for ip in _lan_addresses():
+        print(f"  平板可用：http://{ip}:{config.port}/?k={config.token}")
+    print(f"  下载目录：{config.media_dir}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
