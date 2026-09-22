@@ -109,7 +109,8 @@ else
 fi
 
 head_ "7. 反向扫描（残留检查）"
-stray=$(find "$HOME" -maxdepth 3 -name "yuanliu" -not -path "*/dev/*" -not -path "*/.dsh/*" 2>/dev/null | head -3)
+# 排除开发场(~/dev)、DSH 自身、以及**运行时缓存**（~/.cache/yuanliu 放 cookie/token，是设计如此）
+stray=$(find "$HOME" -maxdepth 3 -name "yuanliu" -not -path "*/dev/*" -not -path "*/.dsh/*" -not -path "*/.cache/*" -not -path "*/Documents/repo/*" 2>/dev/null | head -3)
 [ -z "$stray" ] && ok "家目录无 yuanliu 残留" || no "家目录有残留：$stray"
 
 printf '\n\033[1m══ 汇总 ══\033[0m\n  通过 \033[1;32m%d\033[0m 项,失败 \033[1;31m%d\033[0m 项\n' "$pass" "$fail"

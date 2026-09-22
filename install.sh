@@ -83,6 +83,11 @@ if [ "$DRY_RUN" = 0 ]; then
     chgrp wheel /etc/yuanliu/token 2>/dev/null || true
     say "token    : 已生成 /etc/yuanliu/token（640 root:wheel —— 自己（wheel 组）可读，用于拼平板 URL）"
   else
+    # 自愈：老版本（或改名迁移过来的）token 文件里可能是旧变量名，会导致服务"没有 token"起不来
+    if grep -q '^MEDIA_RESOLVE_TOKEN=' /etc/yuanliu/token 2>/dev/null; then
+      sed -i 's/^MEDIA_RESOLVE_TOKEN=/YUANLIU_TOKEN=/' /etc/yuanliu/token
+      say "token    : 旧变量名已修正为 YUANLIU_TOKEN"
+    fi
     say "token    : 已存在，沿用"
   fi
   # 端口/目录等非敏感配置，追加进 env（可被用户读，供 CLI 用）
