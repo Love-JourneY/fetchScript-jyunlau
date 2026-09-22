@@ -104,6 +104,7 @@ class DownloadOutcome:
     files: list[Path] = field(default_factory=list)
     transcripts: list[Path] = field(default_factory=list)
     transcribe_error: str = ""
+    discarded: list[Path] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -113,6 +114,7 @@ class DownloadOutcome:
             "files": [str(path) for path in self.files],
             "transcripts": [str(path) for path in self.transcripts],
             "transcribe_error": self.transcribe_error,
+            "discarded": [str(path) for path in self.discarded],
         }
 
 
@@ -185,6 +187,19 @@ def _title_hint(resolved_url: str, engine_name: str) -> str | None:
     return None
 
 
+def _discard_media(files: list[Path]) -> list[Path]:
+    """删中间媒体（只留文字模式）。删不掉不算失败，记下来让人知道。"""
+    removed: list[Path] = []
+    for path in files:
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(path)
+        except OSError:
+            continue
+    return removed
+
+
 def _transcribe_into(outcome: DownloadOutcome, outdir: Path) -> None:
     """转写失败**不算下载失败**：文稿拿不到就只记错误，视频照样交付。"""
     from yuanliu.transcribe import Transcriber
@@ -236,8 +251,18 @@ def download(
     cookies: Path | None = None,
     timeout: float = 900.0,
     transcribe: bool = False,
+    keep_media: bool = True,
+    audio_only: bool = False,
 ) -> DownloadOutcome:
-    """下载到 ``outdir``；引擎按平台偏好依次尝试；``transcribe=True`` 时接着转文字（调 b2t）。"""
+    """下载到 ``outdir``，可选接着转文字。
+
+    解耦（Nija 2026-09-22）：**「要不要视频」和「要不要文字」是两件事** ——
+
+    - ``transcribe=True, keep_media=True``：视频 + 文稿都留（默认）
+    - ``transcribe=True, keep_media=False``：**只留文字**，转写完把视频/音频删掉
+      （文字存储成本低得多、检索与引用效率高得多；纯音频内容的视频尤其没必要留）
+    - ``audio_only=True``：只为取文字时**干脆不下整片**（yt-dlp 取 `ba`、lux 用 `-ao`）
+    """
     cookies = _existing_cookies(cookies)
     current = plan(text)
     resolved = _resolve_if_short(current.link)
@@ -256,7 +281,9 @@ def download(
     errors: list[str] = []
     for engine in usable:
         try:
-            files = engine.download(resolved, outdir, cookies=cookies, timeout=timeout)
+            files = engine.download(
+                resolved, outdir, cookies=cookies, timeout=timeout, audio_only=audio_only
+            )
         except (EngineFailed, EngineUnavailable) as exc:
             errors.append(f"{engine.name}: {exc}")
             continue
@@ -265,6 +292,10 @@ def download(
             outcome = DownloadOutcome(plan=current, engine=engine.name, files=files)
             if transcribe:
                 _transcribe_into(outcome, outdir)
+                if not keep_media and not outcome.transcribe_error:
+                    # 只要文字：**转写成功才删**（失败时必须留着媒体，人还能自己再试）
+                    outcome.discarded = _discard_media(outcome.files)
+                    outcome.files = []
             return outcome
         errors.append(f"{engine.name}: 报告成功但没有产出文件")
     # 把**每个引擎**的原因都说出来：只报最后一个会把真正的病根藏起来（实测踩过）

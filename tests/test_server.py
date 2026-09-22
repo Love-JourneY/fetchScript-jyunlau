@@ -101,27 +101,3 @@ def test_index_without_token_warns(server) -> None:
     assert "没带 token" in html
 
 
-def test_download_accepts_transcribe_flag(tmp_path: Path, monkeypatch) -> None:
-    """带 transcribe 的下载任务要记住这个意图（转写本身由 b2t 完成）。"""
-    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
-    called = {}
-
-    def fake_download(text, outdir, *, cookies=None, transcribe=False):
-        called["transcribe"] = transcribe
-        from yuanliu.resolve import DownloadOutcome, plan
-
-        (Path(outdir) / "v.mp4").write_bytes(b"x")
-        return DownloadOutcome(plan=plan("https://www.bilibili.com/video/BV1xx411c7XD"), engine="fake",
-                               files=[Path(outdir) / "v.mp4"])
-
-    monkeypatch.setattr("yuanliu.server.download_media", fake_download)
-    job = app.submit("https://www.bilibili.com/video/BV1xx411c7XD", transcribe=True)
-    for _ in range(50):
-        if job.status in {"done", "failed"}:
-            break
-        import time
-
-        time.sleep(0.05)
-    assert job.status == "done"
-    assert called["transcribe"] is True

@@ -63,7 +63,13 @@ class Engine(Protocol):
     def probe(self, url: str, *, timeout: float = 60.0) -> dict: ...
 
     def download(
-        self, url: str, outdir: Path, *, cookies: Path | None = None, timeout: float = 900.0
+        self,
+        url: str,
+        outdir: Path,
+        *,
+        cookies: Path | None = None,
+        timeout: float = 900.0,
+        audio_only: bool = False,
     ) -> list[Path]: ...
 
 
@@ -130,23 +136,36 @@ class YtDlpEngine:
             raise EngineFailed(f"yt-dlp 输出无法解析为 JSON：{exc}") from exc
 
     def download(
-        self, url: str, outdir: Path, *, cookies: Path | None = None, timeout: float = 900.0
+        self,
+        url: str,
+        outdir: Path,
+        *,
+        cookies: Path | None = None,
+        timeout: float = 900.0,
+        audio_only: bool = False,
     ) -> list[Path]:
         binary = self._require()
         outdir.mkdir(parents=True, exist_ok=True)
         before = set(outdir.iterdir())
-        cmd = [
-            binary,
-            "--no-warnings",
-            "--no-playlist",
-            "-f",
-            "bv*+ba/b",
-            "--merge-output-format",
-            "mp4",
-            "-o",
-            str(outdir / "%(title)s.%(ext)s"),  # 文件名=视频标题（Nija 2026-09-22 要求）
-            url,
-        ]
+        if audio_only:
+            # 只要文字时**别下整片视频**：只取最佳音轨（省带宽、省盘、可直喂 ASR）
+            cmd = [
+                binary, "--no-warnings", "--no-playlist", "-f", "ba/b",
+                "-o", str(outdir / "%(title)s.%(ext)s"), url,
+            ]
+        else:
+            cmd = [
+                binary,
+                "--no-warnings",
+                "--no-playlist",
+                "-f",
+                "bv*+ba/b",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                str(outdir / "%(title)s.%(ext)s"),  # 文件名=视频标题（Nija 2026-09-22 要求）
+                url,
+            ]
         if cookies is not None:
             cmd += ["--cookies", str(cookies)]
         result = _run(cmd, timeout=timeout)
@@ -189,14 +208,23 @@ class LuxEngine:
         return {"engine": self.name, "raw": result.stdout.strip()}
 
     def download(
-        self, url: str, outdir: Path, *, cookies: Path | None = None, timeout: float = 900.0
+        self,
+        url: str,
+        outdir: Path,
+        *,
+        cookies: Path | None = None,
+        timeout: float = 900.0,
+        audio_only: bool = False,
     ) -> list[Path]:
         binary = self._require()
         outdir.mkdir(parents=True, exist_ok=True)
         before = set(outdir.iterdir())
-        cmd = [binary, "-o", str(outdir), url]
+        cmd = [binary, "-o", str(outdir)]
+        if audio_only:
+            cmd.append("-ao")  # lux 原生支持 --audio-only
         if cookies is not None:
-            cmd = [binary, "-c", str(cookies), "-o", str(outdir), url]
+            cmd += ["-c", str(cookies)]
+        cmd.append(url)
         result = _run(cmd, timeout=timeout)
         if result.returncode != 0:
             raise EngineFailed(f"lux 下载失败：{(result.stderr or '').strip()[:500]}")

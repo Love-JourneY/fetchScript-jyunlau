@@ -115,3 +115,68 @@ def test_missing_cookies_path_is_ignored(monkeypatch, tmp_path) -> None:
     real = tmp_path / "cookies.txt"
     real.write_text("# Netscape\n", encoding="utf-8")
     assert _existing_cookies(real) == real
+
+
+def test_text_only_deletes_media_after_success(monkeypatch, tmp_path) -> None:
+    """只要文字：转写成功后视频必须被删掉（文字才是要留下的东西）。"""
+    out = tmp_path / "out"
+    fake = tmp_path / "yt-dlp"
+    fake.write_text(f'#!/usr/bin/env bash\nmkdir -p "{out}" && touch "{out}/v.mp4"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("YUANLIU_YTDLP", str(fake))
+    monkeypatch.setenv("YUANLIU_LUX", "/nope")
+    monkeypatch.setenv("YUANLIU_NODE", "/nope")
+
+    def fake_transcribe(self, media, *, timeout=3600.0, copy_to=None):
+        from yuanliu.transcribe import TranscriptResult
+
+        copy_to.mkdir(parents=True, exist_ok=True)
+        target = copy_to / f"{media.stem}.txt"
+        target.write_text("文稿", encoding="utf-8")
+        return TranscriptResult(transcript=target)
+
+    monkeypatch.setattr("yuanliu.transcribe.Transcriber.transcribe", fake_transcribe)
+    outcome = download(
+        "https://www.bilibili.com/video/BV1xx411c7XD", out, transcribe=True, keep_media=False
+    )
+    assert outcome.files == []
+    assert len(outcome.transcripts) == 1
+    assert len(outcome.discarded) == 1
+    assert not (out / "v.mp4").exists()
+
+
+def test_text_only_keeps_media_when_transcribe_fails(monkeypatch, tmp_path) -> None:
+    """转写失败时必须留着媒体，否则人就白下了。"""
+    out = tmp_path / "out"
+    fake = tmp_path / "yt-dlp"
+    fake.write_text(f'#!/usr/bin/env bash\nmkdir -p "{out}" && touch "{out}/v.mp4"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("YUANLIU_YTDLP", str(fake))
+    monkeypatch.setenv("YUANLIU_LUX", "/nope")
+    monkeypatch.setenv("YUANLIU_NODE", "/nope")
+
+    def boom(self, media, *, timeout=3600.0, copy_to=None):
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr("yuanliu.transcribe.Transcriber.transcribe", boom)
+    outcome = download(
+        "https://www.bilibili.com/video/BV1xx411c7XD", out, transcribe=True, keep_media=False
+    )
+    assert outcome.transcribe_error
+    assert (out / "v.mp4").exists()
+    assert outcome.discarded == []
+
+
+def test_audio_only_passes_flag_to_engine(monkeypatch, tmp_path) -> None:
+    """只要文字时不该下整片视频：audio_only 要传到引擎。"""
+    out = tmp_path / "out"
+    seen = {}
+    fake = tmp_path / "yt-dlp"
+    fake.write_text(f'#!/usr/bin/env bash\necho "$@" > "{tmp_path}/args.txt"\nmkdir -p "{out}" && touch "{out}/a.m4a"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("YUANLIU_YTDLP", str(fake))
+    monkeypatch.setenv("YUANLIU_LUX", "/nope")
+    monkeypatch.setenv("YUANLIU_NODE", "/nope")
+    download("https://www.bilibili.com/video/BV1xx411c7XD", out, audio_only=True)
+    args = (tmp_path / "args.txt").read_text(encoding="utf-8")
+    assert "ba/b" in args

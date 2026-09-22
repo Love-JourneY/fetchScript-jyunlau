@@ -117,4 +117,6 @@ yuanliu download "<分享文案>" -o /var/lib/yuanliu/media --json
 | 能力 | 怎么用 |
 |---|---|
 | 文件名=视频标题 | 下载产物统一按解析出的标题命名（`names.safe_title`，去非法字符、压空白、截断 80 字） |
-| 下载后转文字 | 网页勾选「下载后转文字」；CLI：`yuanliu download "<链接>" -o DIR --transcribe`。走本机 **b2t（Qwen3-ASR）**，文稿落同一个目录，网页列表里可直接点 |
+| **三种模式，互不绑定** | 网页选「只要视频 / 视频+文字 / 只要文字」；CLI 用 `--transcribe`、`--text-only`、`--audio-only` |
+| 只要文字（推荐给音频类内容） | `yuanliu download "<链接>" -o DIR --text-only` —— **只下音轨 → 转写 → 删掉媒体**，只留 `.txt`。理由：文字存储成本低、检索/引用效率高；视频内容本质是音频时，留视频是浪费 |
+| 单独转文字（跟下载彻底解耦） | `yuanliu transcribe <本地文件>` —— 给任何音/视频文件出同名 `.txt`（调本机 b2t） |

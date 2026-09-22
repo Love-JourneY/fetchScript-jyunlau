@@ -45,6 +45,10 @@ def _build_parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument("text", help="分享文案或链接")
 
+    tx = sub.add_parser("transcribe", help="只转文字：给一个本地音视频文件，出同名 .txt（调本机 b2t）")
+    tx.add_argument("path", help="本地音/视频文件")
+    tx.add_argument("--keep-original", action="store_true", help="转完不删原文件（默认保留）")
+
     sv = sub.add_parser("serve", help="起常驻服务（网页 + JSON API，给平板接入）")
     sv.add_argument("--bind", default=None, help="监听地址（默认 0.0.0.0，供局域网）")
     sv.add_argument("--port", type=int, default=None, help="端口（默认 8901）")
@@ -62,6 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
     dl.add_argument("--engine", default=None, help="强制指定引擎（yt-dlp / lux）")
     dl.add_argument("--cookies", default=None, help="cookies.txt（Netscape 格式），给需登录的平台")
     dl.add_argument("--transcribe", action="store_true", help="下载后顺带转文字（调本机 b2t/Qwen3-ASR）")
+    dl.add_argument("--text-only", action="store_true", help="只要文字：转写完把视频删掉（自动开启 --transcribe）")
+    dl.add_argument("--audio-only", action="store_true", help="只下音轨（配合 --transcribe，省带宽省盘）")
     dl.add_argument("--json", action="store_true", help="输出 JSON")
     return parser
 
@@ -102,6 +108,19 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "probe":
             _emit(probe(args.text), as_json=True)
+            return EXIT_OK
+
+        if args.command == "transcribe":
+            from pathlib import Path as _Path
+
+            from yuanliu.transcribe import Transcriber
+
+            media = _Path(args.path).expanduser()
+            if not media.is_file():
+                print(f"文件不存在：{media}", file=sys.stderr)
+                return EXIT_UNSUPPORTED
+            result = Transcriber().transcribe(media, copy_to=media.parent)
+            print(f"文稿：{result.transcript}")
             return EXIT_OK
 
         if args.command == "serve":
@@ -157,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.out).expanduser(),
                 engine_name=args.engine,
                 cookies=Path(args.cookies).expanduser() if args.cookies else None,
-                transcribe=args.transcribe,
+                transcribe=args.transcribe or args.text_only,
+                keep_media=not args.text_only,
+                audio_only=args.audio_only or args.text_only,
             )
             _emit(outcome.as_dict(), as_json=args.json)
             return EXIT_OK

@@ -54,11 +54,17 @@ class ServerConfig:
         )
 
 
+# 三种模式（Nija 2026-09-22：下载与转文字不要绑死）
+MODE_MEDIA = "media"   # 只要视频
+MODE_BOTH = "both"     # 视频 + 文字
+MODE_TEXT = "text"     # 只要文字（转写完删视频，且只下音轨）
+
+
 @dataclass
 class Job:
     id: str
     text: str
-    transcribe: bool = False
+    mode: str = MODE_MEDIA
     status: str = "queued"  # queued|running|done|failed
     engine: str = ""
     files: list[str] = field(default_factory=list)
@@ -71,7 +77,7 @@ class Job:
         return {
             "id": self.id,
             "text": self.text[:120],
-            "transcribe": self.transcribe,
+            "mode": self.mode,
             "status": self.status,
             "engine": self.engine,
             "files": [Path(f).name for f in self.files] + [Path(f).name for f in self.transcripts],
@@ -90,8 +96,10 @@ class YuanliuServer:
         config.media_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 任务 ----
-    def submit(self, text: str, *, transcribe: bool = False) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], text=text, transcribe=transcribe)
+    def submit(self, text: str, *, mode: str = MODE_MEDIA) -> Job:
+        if mode not in {MODE_MEDIA, MODE_BOTH, MODE_TEXT}:
+            mode = MODE_MEDIA
+        job = Job(id=uuid.uuid4().hex[:12], text=text, mode=mode)
         with self._lock:
             self.jobs[job.id] = job
         threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
@@ -110,12 +118,14 @@ class YuanliuServer:
                 job.text,
                 self.config.media_dir,
                 cookies=self.config.cookies,
-                transcribe=job.transcribe,
+                transcribe=job.mode in {MODE_BOTH, MODE_TEXT},
+                keep_media=job.mode != MODE_TEXT,
+                audio_only=job.mode == MODE_TEXT,
             )
             job.engine = outcome.engine
             job.files = [str(path) for path in outcome.files]
             job.transcripts = [str(path) for path in outcome.transcripts]
-            if job.transcribe and outcome.transcribe_error:
+            if job.mode in {MODE_BOTH, MODE_TEXT} and outcome.transcribe_error:
                 job.error = f"转文字失败（视频已下好）：{outcome.transcribe_error}"
             job.status = "done"
         except (ResolveError, EngineFailed, EngineUnavailable) as exc:
@@ -190,7 +200,11 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
  <button onclick="go('download')">下载</button>
  <button class="sec" onclick="load()">刷新列表</button>
 </div>
-<div class="row"><label><input type="checkbox" id="tx"> 下载后转文字（本机 Qwen3-ASR，慢一点）</label></div>
+<div class="row">
+ <label><input type="radio" name="mode" value="media" checked> 只要视频</label>
+ <label><input type="radio" name="mode" value="both"> 视频 + 文字</label>
+ <label><input type="radio" name="mode" value="text"> 只要文字（转完删视频，只下音轨）</label>
+</div>
 <div class="row"><span>平台/路线会显示在下面</span><span id="k"></span></div>
 <div id="out"></div>
 <div id="jobs"></div>
@@ -213,8 +227,8 @@ async function go(kind){
   if(!text) return;
   document.getElementById('out').innerHTML = '<div class="card">处理中…</div>';
   const body = {text};
-  const tx = document.getElementById('tx');
-  if (kind === 'download' && tx && tx.checked) body.transcribe = true;
+  const picked = document.querySelector('input[name=mode]:checked');
+  if (kind === 'download' && picked) body.mode = picked.value;
   const {status,j} = await api('/api/'+kind, body);
   document.getElementById('out').innerHTML = '<div class="card"><pre>'+JSON.stringify(j,null,1).replace(/[<>]/g,'')+'</pre></div>';
   if(kind==='download') setTimeout(load, 1500);
@@ -225,7 +239,8 @@ async function load(){
   const el = document.getElementById('jobs'); el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">下载记录</h1>';
   (j.jobs||[]).forEach(x=>{
     const cls = x.status==='done'?'ok':(x.status==='failed'?'bad':'run');
-    let html = '<div class="card"><div>['+x.status+'] <span class="'+cls+'">'+x.engine+'</span> '+x.text.slice(0,60)+'</div>';
+    const modeLabel = {media:'只要视频', both:'视频+文字', text:'只要文字'}[x.mode] || x.mode;
+    let html = '<div class="card"><div>['+x.status+'] <span class="'+cls+'">'+x.engine+'</span> <b>'+modeLabel+'</b> '+x.text.slice(0,50)+'</div>';
     if(x.error) html += '<pre>'+x.error.replace(/[<>]/g,'')+'</pre>';
     (x.files||[]).forEach(f=>{ html += '<div><a href="/files/'+encodeURIComponent(f)+(K?('?k='+encodeURIComponent(K)):'')+'">'+f+'</a></div>'; });
     el.innerHTML += html+'</div>';
@@ -334,7 +349,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
             return
         if parsed.path == "/api/download":
-            job = self.app.submit(text, transcribe=bool(payload.get("transcribe")))
+            mode = str(payload.get("mode") or "").strip()
+            if not mode:  # 向后兼容老的 transcribe 布尔字段
+                mode = MODE_BOTH if payload.get("transcribe") else MODE_MEDIA
+            job = self.app.submit(text, mode=mode)
             self._json(202, {"job": job.as_dict()})
             return
         self._json(404, {"error": "not found"})
