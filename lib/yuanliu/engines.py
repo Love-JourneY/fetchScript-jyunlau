@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -102,20 +103,46 @@ def _stream(
     yt-dlp 用 ``--progress-template``/``--newline``，lux 自带百分比进度条 —— 两者都能从
     输出里抠出 ``NN%``。抠不到就不报（前端显示不确定态），绝不假装有进度。
     """
+    import logging
+
+    log = logging.getLogger("yuanliu")
+    log.info("run: %s", " ".join(str(part) for part in cmd)[:300])
     process = subprocess.Popen(  # noqa: S603
         list(cmd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,  # ⚠️ lux 遇到多 P 会**交互式提问**，不给 stdin 就永远卡住（实测）
         encoding="utf-8",
         errors="replace",
         bufsize=1,
     )
     lines: list[str] = []
     deadline = time.monotonic() + timeout
+    state = {"last": time.monotonic(), "stalled": False}
+    announced = 0
+
+    def watchdog() -> None:
+        """卡住检测：**读循环本身也在等输出**，所以必须另起线程看门狗。"""
+        while process.poll() is None:
+            time.sleep(2)
+            if time.monotonic() - state["last"] > stall_limit:
+                state["stalled"] = True
+                log.warning(
+                    "引擎 %.0fs 无任何输出，判定卡住并杀掉：%s", stall_limit, " ".join(str(p) for p in cmd)[:160]
+                )
+                process.kill()
+                return
+
+    stall_limit = float(os.getenv("YUANLIU_STALL_LIMIT", "90"))
+    threading.Thread(target=watchdog, daemon=True).start()
     assert process.stdout is not None
     try:
         for line in process.stdout:
             lines.append(line)
+            state["last"] = time.monotonic()
+            if announced < 3:
+                announced += 1
+                log.info("out: %s", line.strip()[:200])
             if on_progress is not None:
                 match = _PERCENT_RE.search(line)
                 if match:
@@ -130,7 +157,22 @@ def _stream(
     finally:
         if process.poll() is None:
             process.kill()
+    if state["stalled"]:
+        raise EngineFailed(f"引擎 {stall_limit:.0f}s 没有任何输出（判定卡住，已终止）")
     return subprocess.CompletedProcess(list(cmd), returncode, "".join(lines), "")
+
+
+def _reported_filepaths(output: str) -> list[Path]:
+    """从引擎输出里认领"它说已经下好的文件"（绝对路径行）。"""
+    found: list[Path] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line.startswith("/") or len(line) > 1024:
+            continue
+        candidate = Path(line)
+        if candidate.suffix and candidate not in found:
+            found.append(candidate)
+    return found
 
 
 def _run(cmd: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -196,7 +238,15 @@ class YtDlpEngine:
         binary = self._require()
         outdir.mkdir(parents=True, exist_ok=True)
         before = set(outdir.iterdir())
-        progress_args = ["--newline", "--progress-template", "download:%(progress._percent_str)s"]
+        progress_args = [
+            "--newline",
+            "--progress-template",
+            "download:%(progress._percent_str)s",
+            # ⚠️ 必须让 yt-dlp 报出**最终文件路径**：否则"文件已存在⇒跳过下载⇒没有新文件"
+            # 会被我们的"新增文件"启发式误判成失败（实测：重复下载同一视频时发生）
+            "--print",
+            "after_move:filepath",
+        ]
         if audio_only:
             # 只要文字时**别下整片视频**：只取最佳音轨（省带宽、省盘、可直喂 ASR）
             cmd = [
@@ -221,8 +271,18 @@ class YtDlpEngine:
             cmd += ["--cookies", str(cookies)]
         result = _stream(cmd, timeout=timeout, on_progress=on_progress)
         if result.returncode != 0:
-            raise EngineFailed(f"yt-dlp 下载失败：{(result.stdout or '').strip()[-500:]}")
-        return sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
+            tail = (result.stdout or "").strip()[-500:]
+            import logging as _logging
+
+            _logging.getLogger("yuanliu").warning("yt-dlp 退出码 %s，输出尾部：%s", result.returncode, tail)
+            raise EngineFailed(f"yt-dlp 下载失败：{tail}")
+
+        created = sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
+        if created:
+            return created
+        # 没有新文件 ⇒ 多半是"已存在被跳过"：从 --print after_move:filepath 的输出里认领
+        reported = _reported_filepaths(result.stdout or "")
+        return [path for path in reported if path.exists()]
 
 
 @dataclass(slots=True)
@@ -279,7 +339,11 @@ class LuxEngine:
         cmd.append(url)
         result = _stream(cmd, timeout=timeout, on_progress=on_progress)
         if result.returncode != 0:
-            raise EngineFailed(f"lux 下载失败：{(result.stdout or '').strip()[-500:]}")
+            tail = (result.stdout or "").strip()[-500:]
+            import logging as _logging
+
+            _logging.getLogger("yuanliu").warning("lux 退出码 %s，输出尾部：%s", result.returncode, tail)
+            raise EngineFailed(f"lux 下载失败：{tail}")
         return sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
 
 

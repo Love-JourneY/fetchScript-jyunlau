@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import sys
 import threading
 import time
 import urllib.parse
@@ -35,6 +37,8 @@ from yuanliu.resolve import (
 )
 
 __all__ = ["ServerConfig", "YuanliuServer", "main", "MAX_CONCURRENT_JOBS"]
+
+logger = logging.getLogger("yuanliu")
 
 MAX_CONCURRENT_JOBS = 2
 FILE_ALLOWED_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4a", ".mp3", ".jpg", ".jpeg", ".png", ".webp", ".txt"}
@@ -153,10 +157,18 @@ class YuanliuServer:
         job.stage = "downloading"
         job.progress = 0.0
 
+        started = time.time()
+        logger.info("job %s 开始 mode=%s text=%s", job.id, job.mode, job.text[:80])
+        _last_logged = {"pct": -1}
+
         def report(value: float) -> None:
             job.progress = min(1.0, max(0.0, float(value)))
             if 0.8 <= job.progress < 1.0:
                 job.stage = "transcribing"
+            pct = int(job.progress * 10) * 10
+            if pct != _last_logged["pct"]:
+                _last_logged["pct"] = pct
+                logger.info("job %s 进度 %d%% stage=%s", job.id, pct, job.stage)
 
         try:
             outcome = download_media(
@@ -176,10 +188,15 @@ class YuanliuServer:
             if job.mode in {MODE_BOTH, MODE_TEXT} and outcome.transcribe_error:
                 job.error = f"转文字失败（视频已下好）：{outcome.transcribe_error}"
             job.status = "done"
+            logger.info(
+                "job %s 完成 engine=%s 用时=%.1fs 文件=%s",
+                job.id, job.engine, time.time() - started, [Path(f).name for f in job.files] or "-",
+            )
         except (ResolveError, EngineFailed, EngineUnavailable) as exc:
             job.status = "failed"
             job.stage = "failed"
             job.error = str(exc)[:500]
+            logger.warning("job %s 失败：%s", job.id, job.error)
         except Exception as exc:  # noqa: BLE001 - 服务端不能让单任务炸掉线程
             job.status = "failed"
             job.stage = "failed"
@@ -404,7 +421,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, body, "text/html; charset=utf-8")
             return
         if parsed.path == "/api/health":
-            self._json(200, {"ok": True, "version": __version__})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "version": __version__,
+                    "module": __file__,          # 服务到底跑的哪份代码（排查"改了没生效"）
+                    "python": sys.version.split()[0],
+                    "jobs": len(self.app.jobs),
+                },
+            )
             return
         if not self._token_ok(query):
             self._json(401, {"error": "需要 token（?k=… 或 X-Token）"})
@@ -496,6 +522,10 @@ def _lan_addresses() -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
 
     parser = argparse.ArgumentParser(prog="yuanliu serve", description="常驻服务（网页 + JSON API）")
     parser.add_argument("--bind", default=None)

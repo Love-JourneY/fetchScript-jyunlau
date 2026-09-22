@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import Callable, Iterable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -241,8 +242,37 @@ def resolve_short_url(
     opener: Callable[[str, float], str] = default_opener,
     timeout: float = 10.0,
     max_hops: int = 5,
+    total_timeout: float | None = 6.0,
 ) -> str:
-    """跟随短链跳转，返回最终 URL。**唯一会发网络请求的函数**（opener 可注入 ⇒ 可单测）。"""
+    """跟随短链跳转，返回最终 URL。**唯一会发网络请求的函数**（opener 可注入 ⇒ 可单测）。
+
+    ⚠️ 实测坑（2026-09-23）：`urllib` 的 timeout 是**单次 socket 操作**的超时，管不住"慢速滴血"式响应
+    —— b23.tv 曾把整个下载卡在 0% 好几十秒，就是因为卡在这一步之前。
+    ⇒ 整段解析加**总时限**，超时就当"没解开"，把原短链交给引擎（yt-dlp/lux 自己会跟跳转）。
+    """
+    if total_timeout is None or total_timeout <= 0:
+        return _resolve_short_url_inner(url, opener=opener, timeout=timeout, max_hops=max_hops)
+
+    box: dict[str, str] = {}
+
+    def work() -> None:
+        box["url"] = _resolve_short_url_inner(url, opener=opener, timeout=timeout, max_hops=max_hops)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(total_timeout)
+    if thread.is_alive():  # 超时：别让整条流水线跟着一起卡
+        return url
+    return box.get("url", url)
+
+
+def _resolve_short_url_inner(
+    url: str,
+    *,
+    opener: Callable[[str, float], str],
+    timeout: float,
+    max_hops: int,
+) -> str:
     current = url
     for _ in range(max_hops):
         if not is_short_url(current):

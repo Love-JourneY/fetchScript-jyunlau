@@ -64,3 +64,22 @@ def test_parse_input_prefers_share_text_url() -> None:
 
     link = parse_input("看看这个 https://v.douyin.com/iRNBho6G/ 复制此链接")
     assert link.platform == "douyin"
+
+
+def test_resolve_short_url_total_timeout_returns_original() -> None:
+    """慢速响应不能把整条流水线卡死：总时限一到就放弃，交原短链给引擎。"""
+    import time as _time
+
+    def sleepy_opener(url: str, timeout: float) -> str:
+        _time.sleep(5)
+        return "https://www.bilibili.com/video/BV1xx411c7XD"
+
+    started = _time.monotonic()
+    result = resolve_short_url("https://b23.tv/abc", opener=sleepy_opener, total_timeout=0.3)
+    assert result == "https://b23.tv/abc"
+    assert _time.monotonic() - started < 2
+
+
+def test_resolve_short_url_without_total_timeout_still_works() -> None:
+    target = "https://www.bilibili.com/video/BV1xx411c7XD"
+    assert resolve_short_url("https://b23.tv/abc", opener=lambda u, t: target, total_timeout=None) == target

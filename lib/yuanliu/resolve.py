@@ -145,7 +145,15 @@ def plan(text: str, *, only_available: bool = True) -> Plan:
 def _resolve_if_short(link: ShareLink, *, timeout: float = 10.0) -> str:
     if not link.is_short:
         return link.url
-    return canonical_after_redirect(link)
+    import logging
+    import time as _time
+
+    started = _time.monotonic()
+    resolved = canonical_after_redirect(link)
+    logging.getLogger("yuanliu").info(
+        "短链解析 %s → %s（%.1fs）", link.url, resolved, _time.monotonic() - started
+    )
+    return resolved
 
 
 def canonical_after_redirect(link: ShareLink, *, timeout: float = 10.0) -> str:

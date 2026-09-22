@@ -80,3 +80,46 @@ def test_pick_engines_filters_unavailable(monkeypatch) -> None:
     monkeypatch.setenv("YUANLIU_NODE", "/nope")
     monkeypatch.setenv("YUANLIU_SNIFF", "/nope")
     assert pick_engines("bilibili") == ()
+
+
+def test_stream_kills_stalled_child(monkeypatch) -> None:
+    """子进程没有任何输出时必须被看门狗杀掉（实测：lux 多 P 交互提问会永久卡住）。"""
+    import time as _time
+
+    from yuanliu import engines as engines_mod
+    from yuanliu.engines import EngineFailed
+
+    monkeypatch.setenv("YUANLIU_STALL_LIMIT", "1")
+    with pytest.raises(EngineFailed) as excinfo:
+        engines_mod._stream(["/bin/sh", "-c", "sleep 30"], timeout=30)
+    assert "卡住" in str(excinfo.value)
+
+
+def test_stream_passes_stdin_devnull(monkeypatch, tmp_path) -> None:
+    """stdin 必须是 /dev/null —— 否则交互式提问会把下载挂死。"""
+    from yuanliu import engines as engines_mod
+
+    result = engines_mod._stream(["/bin/sh", "-c", "read x || echo EOF"], timeout=10)
+    assert "EOF" in result.stdout
+
+
+def test_reported_filepaths_extracts_absolute_paths() -> None:
+    from yuanliu.engines import _reported_filepaths
+
+    out = " 42.0%\n/var/lib/yuanliu/media/我的视频.mp4\n100.0%\n"
+    paths = _reported_filepaths(out)
+    assert [p.name for p in paths] == ["我的视频.mp4"]
+
+
+def test_ytdlp_returns_existing_file_when_skipped(monkeypatch, tmp_path) -> None:
+    """重复下载同一视频时 yt-dlp 会跳过 ⇒ 必须认领已存在的文件，而不是当失败。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    existing = out / "老视频.mp4"
+    existing.write_bytes(b"x")
+    fake = tmp_path / "yt-dlp"
+    fake.write_text(f'#!/usr/bin/env bash\necho "{existing}"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("YUANLIU_YTDLP", str(fake))
+    files = YtDlpEngine().download("https://example.com/x", out)
+    assert files == [existing]
