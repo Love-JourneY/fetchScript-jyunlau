@@ -98,10 +98,36 @@ class Job:
         }
 
 
+class LoginThrottle:
+    """密码试错限速：连续失败就越来越慢（LAN 场景下的最低限度防护）。"""
+
+    def __init__(self, max_attempts: int = 5, base_delay: float = 1.0) -> None:
+        self.max_attempts = max_attempts
+        self.base_delay = base_delay
+        self._failures: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def delay_for(self, key: str) -> float:
+        with self._lock:
+            failures = self._failures.get(key, 0)
+        if failures < self.max_attempts:
+            return 0.0
+        return min(30.0, self.base_delay * (2 ** (failures - self.max_attempts)))
+
+    def record_failure(self, key: str) -> None:
+        with self._lock:
+            self._failures[key] = self._failures.get(key, 0) + 1
+
+    def reset(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+
+
 class YuanliuServer:
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
         self.jobs: dict[str, Job] = {}
+        self.throttle = LoginThrottle()
         self._lock = threading.Lock()
         self._running = 0
         config.media_dir.mkdir(parents=True, exist_ok=True)
@@ -218,11 +244,20 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 </style></head><body>
 <h1>yuanliu <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
 <div id="banner">__BANNER__</div>
+<div id="gate" class="card" style="display:none">
+  <div>请输入密码（一次即可，会记在这台设备上）</div>
+  <div style="margin-top:8px"><input id="pw" type="password" placeholder="密码" autocomplete="current-password"
+     style="padding:12px;font-size:16px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#eee"></div>
+  <button onclick="login()">进入</button>
+  <span id="gateMsg" class="bad"></span>
+</div>
+<div id="app" style="display:none">
 <textarea id="t" placeholder="把 App 里复制的分享文案整段贴进来（含短链也行）"></textarea>
 <div>
  <button onclick="go('resolve')">解析（不下载）</button>
  <button onclick="go('download')">下载</button>
  <button class="sec" onclick="load()">刷新列表</button>
+ <button class="sec" onclick="logout()">退出</button>
 </div>
 <div class="row">
  <label><input type="radio" name="mode" value="media" checked> 只要视频</label>
@@ -232,9 +267,29 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <div class="row"><span>平台/路线会显示在下面</span><span id="k"></span></div>
 <div id="out"></div>
 <div id="jobs"></div>
+</div>
 <script>
-const K = new URLSearchParams(location.search).get('k') || '';
-document.getElementById('k').textContent = K ? '已带 token' : '⚠ 无 token（可能 401）';
+// 密码模式：优先用 URL 里的 k（老书签），否则用本机记住的密码
+let K = new URLSearchParams(location.search).get('k') || localStorage.getItem('yuanliu_pw') || '';
+document.getElementById('k').textContent = K ? '已登录' : '';
+async function login(){
+  const pw = document.getElementById('pw').value;
+  if(!pw) return;
+  const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})});
+  if(r.ok){ localStorage.setItem('yuanliu_pw', pw); K = pw; showApp(); }
+  else { document.getElementById('gateMsg').textContent = '密码不对'; }
+}
+function showApp(){
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('k').textContent = '已登录';
+  load();
+}
+function logout(){
+  localStorage.removeItem('yuanliu_pw'); K='';
+  document.getElementById('app').style.display='none';
+  document.getElementById('gate').style.display='block';
+}
 async function api(path, body){
   const r = await fetch(path + (K?('?k='+encodeURIComponent(K)):''), {method:'POST',
     headers:{'Content-Type':'application/json','X-Token':K}, body: JSON.stringify(body||{})});
@@ -276,7 +331,15 @@ async function load(){
     el.innerHTML += html+'</div>';
   });
 }
-load();
+// 启动：有密码就先验一下，验不过就回退到密码门
+(async () => {
+  if (K) {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: K})}).catch(()=>null);
+    if (r && r.ok) { showApp(); return; }
+    localStorage.removeItem('yuanliu_pw'); K='';
+  }
+  document.getElementById('gate').style.display = 'block';
+})();
 </script></body></html>"""
 
 
@@ -362,8 +425,25 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+        # 登录**必须在 token 检查之前**（否则永远 401，密码门形同虚设）
+        if parsed.path == "/api/login":
+            import time as _time
+
+            payload = self._body()
+            key = self.client_address[0] if self.client_address else "?"
+            delay = self.app.throttle.delay_for(key)
+            if delay:
+                _time.sleep(min(delay, 5.0))
+            password = str(payload.get("password") or "")
+            if password and password == self.app.config.token:
+                self.app.throttle.reset(key)
+                self._json(200, {"ok": True})
+            else:
+                self.app.throttle.record_failure(key)
+                self._json(401, {"error": "密码不对"})
+            return
         if not self._token_ok(query):
-            self._json(401, {"error": "需要 token（?k=… 或 X-Token）"})
+            self._json(401, {"error": "需要密码（页面里输入，或 ?k=… / X-Token）"})
             return
         payload = self._body()
         text = str(payload.get("text") or "").strip()

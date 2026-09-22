@@ -165,3 +165,26 @@ def test_job_reports_progress(tmp_path: Path, monkeypatch) -> None:
     assert seen.get("mid")
     assert job.progress == 1.0
     assert job.as_dict()["stage"] == "done"
+
+
+def test_login_accepts_correct_password(server) -> None:
+    body = json.loads(_post(f"{server}/api/login", {"password": "secret"}, token="").read())
+    assert body == {"ok": True}
+
+
+def test_login_rejects_wrong_password(server) -> None:
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        _post(f"{server}/api/login", {"password": "nope"}, token="")
+    assert excinfo.value.code == 401
+
+
+def test_login_throttle_delays_after_repeated_failures() -> None:
+    from yuanliu.server import LoginThrottle
+
+    throttle = LoginThrottle(max_attempts=2, base_delay=1.0)
+    assert throttle.delay_for("1.2.3.4") == 0.0
+    throttle.record_failure("1.2.3.4")
+    throttle.record_failure("1.2.3.4")
+    assert throttle.delay_for("1.2.3.4") > 0
+    throttle.reset("1.2.3.4")
+    assert throttle.delay_for("1.2.3.4") == 0.0
