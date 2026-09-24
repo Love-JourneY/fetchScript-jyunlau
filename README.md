@@ -120,3 +120,15 @@ yuanliu download "<分享文案>" -o /var/lib/yuanliu/media --json
 | **三种模式，互不绑定** | 网页选「只要视频 / 视频+文字 / 只要文字」；CLI 用 `--transcribe`、`--text-only`、`--audio-only` |
 | 只要文字（推荐给音频类内容） | `yuanliu download "<链接>" -o DIR --text-only` —— **只下音轨 → 转写 → 删掉媒体**，只留 `.txt`。理由：文字存储成本低、检索/引用效率高；视频内容本质是音频时，留视频是浪费 |
 | 单独转文字（跟下载彻底解耦） | `yuanliu transcribe <本地文件>` —— 给任何音/视频文件出同名 `.txt`（调本机 b2t） |
+
+
+## 致谢与引用
+
+- **[bili2text](https://github.com/lanbinleo/bili2text)**（MIT，lanbinleo）—— 视频转文字这一半的设计起点。
+  我们早期 fork 过它、在里面把运行时换成 Qwen3-ASR(ONNX)，后来**把它当外部命令调用**（`bili2text tx`）而不是继续分叉。
+  本项目的"字幕优先 / 失败分型 / 中间物回收"等工程经验，也受它以及社区若干同类项目的启发。**感谢原作者与贡献者。**
+- **yt-dlp / lux / Playwright** —— 下载与浏览器嗅探的引擎（见 `THIRD-PARTY.md`）。
+- 调研阶段参考过的众多开源项目（抖音/小红书/视频号解析、VAD 与字幕工程等），其**精华已内化**为本项目自己的实现，
+  为避免把别人的源码/文档留进本仓库，**参考资料已清理**。
+
+> 本项目是**独立实现**：不包含也不分发上述项目的源码（`vendor/lux` 是原样二进制，保留其 MIT 许可）。

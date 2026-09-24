@@ -12,3 +12,5 @@
 | [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) | 语音识别模型 | Apache-2.0 | 由 b2t 加载 |
 
 说明：MIT/Unlicense/Apache-2.0 与 AGPL-3.0 兼容；本项目只**调用**它们，不复制其源码（`vendor/lux` 是原样二进制分发，保留其 MIT 许可）。
+
+**特别感谢**：[bili2text](https://github.com/lanbinleo/bili2text)（MIT）—— 视频转文字方向的起点，我们把它的运行时改造经验（Qwen3-ASR/ONNX）吸收进本项目，并以「外部命令」方式调用它而不是继续分叉。
