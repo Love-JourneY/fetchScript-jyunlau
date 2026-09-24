@@ -1,6 +1,6 @@
 import json
 
-from yuanliu.cli import EXIT_NO_ENGINE, EXIT_OK, EXIT_UNSUPPORTED, main
+from fetchscript.cli import EXIT_NO_ENGINE, EXIT_OK, EXIT_UNSUPPORTED, main
 
 
 def test_cli_engines_prints_json(capsys) -> None:
@@ -21,8 +21,8 @@ def test_cli_rejects_video_channels(capsys) -> None:
 
 
 def test_cli_plan_without_engine(monkeypatch, capsys) -> None:
-    monkeypatch.setenv("YUANLIU_LUX", "/nope")
-    monkeypatch.setenv("YUANLIU_YTDLP", "/nope")
-    monkeypatch.setenv("YUANLIU_NODE", "/nope")
-    monkeypatch.setenv("YUANLIU_SNIFF", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_LUX", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_YTDLP", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_NODE", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_SNIFF", "/nope")
     assert main(["plan", "https://v.kuaishou.com/xyz"]) == EXIT_NO_ENGINE

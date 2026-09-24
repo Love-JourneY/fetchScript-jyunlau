@@ -16,14 +16,14 @@ from typing import Callable
 from datetime import datetime
 from pathlib import Path
 
-from yuanliu.engines import (
+from fetchscript.engines import (
     Engine,
     EngineFailed,
     EngineUnavailable,
     engines_for_platform,
     pick_engines,
 )
-from yuanliu.share_links import ShareLink, ShareLinkError, parse_input, resolve_short_url
+from fetchscript.share_links import ShareLink, ShareLinkError, parse_input, resolve_short_url
 
 __all__ = [
     "ResolveError",
@@ -43,7 +43,7 @@ REJECTED_PLATFORMS = {"wechat_channels": "微信视频号没有公开直链，�
 
 # 冷却期闸门：某个平台被我们打到风控时，**禁止再自动打它**（防止越打越死）
 # 文件内容是 ISO 时间戳或 unix 秒；到点自动失效。
-COOLDOWN_FILE = Path(os.getenv("YUANLIU_COOLDOWN_FILE", Path.home() / ".cache/yuanliu/cooldown.json"))
+COOLDOWN_FILE = Path(os.getenv("FETCHSCRIPT_COOLDOWN_FILE", Path.home() / ".cache/fetchscript/cooldown.json"))
 
 
 def _cooldown_error(platform: str) -> str | None:
@@ -150,7 +150,7 @@ def _resolve_if_short(link: ShareLink, *, timeout: float = 10.0) -> str:
 
     started = _time.monotonic()
     resolved = canonical_after_redirect(link)
-    logging.getLogger("yuanliu").info(
+    logging.getLogger("fetchscript").info(
         "短链解析 %s → %s（%.1fs）", link.url, resolved, _time.monotonic() - started
     )
     return resolved
@@ -161,7 +161,7 @@ def canonical_after_redirect(link: ShareLink, *, timeout: float = 10.0) -> str:
     final = resolve_short_url(link.url, timeout=timeout)
     if final == link.url:
         return link.url
-    from yuanliu.share_links import canonicalize_url, detect_platform
+    from fetchscript.share_links import canonicalize_url, detect_platform
 
     return canonicalize_url(final, detect_platform(final))
 
@@ -211,7 +211,7 @@ def _discard_media(files: list[Path]) -> list[Path]:
 
 def _transcribe_into(outcome: DownloadOutcome, outdir: Path) -> None:
     """转写失败**不算下载失败**：文稿拿不到就只记错误，视频照样交付。"""
-    from yuanliu.transcribe import Transcriber
+    from fetchscript.transcribe import Transcriber
 
     transcriber = Transcriber()
     for media in outcome.files:
@@ -227,7 +227,7 @@ def _transcribe_into(outcome: DownloadOutcome, outdir: Path) -> None:
 
 def _rename_by_title(files: list[Path], *, title: str | None) -> list[Path]:
     """把产物统一成 `safe_title(标题).ext`（同名冲突时加 -2、-3）。"""
-    from yuanliu.names import normalize_existing_name, safe_title
+    from fetchscript.names import normalize_existing_name, safe_title
 
     renamed: list[Path] = []
     for path in files:
@@ -371,6 +371,6 @@ def describe_routes() -> list[dict]:
 
 
 def _routing_items():
-    from yuanliu.engines import PLATFORM_ROUTING
+    from fetchscript.engines import PLATFORM_ROUTING
 
     return PLATFORM_ROUTING.items()

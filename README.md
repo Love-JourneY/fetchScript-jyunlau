@@ -1,11 +1,18 @@
-# yuanliu —— 分享链接 → 本地媒体（多引擎路由）
+# 源流 · fetchScript-jyunlau
+
+> 品牌名：**fetchScript-jyunlau**（中文名 **源流**，粤拼 jyun4 lau4）· 技术标识：`fetchscript`（包名/命令/路径）
 
 > **一句话**：把从 App 里复制出来的**整段分享文案**（带口令、短链、追踪参数）变成"本地文件"。
 > 本模块**不自己写平台解析**——抖音/快手/小红书的风控签名是活的，自己养不划算；
 > 它只做三件事：**归一化链接 → 按平台挑引擎 → 下载并分型报错**。
 
-来源：`~/dev/yuanliu/`（开发场）→ 装到 `/opt/yuanliu/`（安装位）。
-调研依据：`~/dev/yuanliu-research/README.md`（含本机实测：yt-dlp 无快手提取器、小红书提取器当前失效、抖音需 cookie）。
+来源：`~/dev/fetchscript/`（开发场）→ 装到 `/opt/fetchscript/`（安装位）。
+调研依据：`~/dev/fetchscript-research/README.md`（含本机实测：yt-dlp 无快手提取器、小红书提取器当前失效、抖音需 cookie）。
+
+## 它是什么（一句话）
+
+**贴一条平台分享链接 → 干净的本地视频 / 音频 / 文字稿。**
+`fetchScript`（抓取）+ `jyunlau 源流`（源头活水）+ 中文「源流」三者同指一个东西：**从源头把资源取下来，顺手抄成文字。**
 
 ## 它为什么存在
 
@@ -20,16 +27,16 @@
 
 | 东西 | 位置 |
 |---|---|
-| 程序位（纯 stdlib，零第三方依赖） | `/opt/yuanliu/lib/yuanliu/` |
-| 随包二进制 | `/opt/yuanliu/vendor/lux` |
-| 启动器 | `/usr/local/bin/yuanliu` |
-| 引擎路径配置 | `/etc/yuanliu/env` |
-| 状态位（默认下载目录） | `/var/lib/yuanliu/` |
+| 程序位（纯 stdlib，零第三方依赖） | `/opt/fetchscript/lib/fetchscript/` |
+| 随包二进制 | `/opt/fetchscript/vendor/lux` |
+| 启动器 | `/usr/local/bin/fetchscript` |
+| 引擎路径配置 | `/etc/fetchscript/env` |
+| 状态位（默认下载目录） | `/var/lib/fetchscript/` |
 
 ## 装 / 验 / 卸
 
 ```bash
-cd ~/Documents/repo/yuanliu
+cd ~/Documents/repo/fetchscript
 sudo ./install.sh --dry-run     # 先看要做什么
 sudo ./install.sh               # 幂等，可重复跑
 bash ./verify.sh                # 通过/失败清单
@@ -37,7 +44,7 @@ sudo ./uninstall.sh             # 移除（状态位保留，--purge 连它一�
 ```
 
 **引擎是可选后端**：`yt-dlp` 默认复用 b2t 那份（`/opt/bili2text/app/.venv/bin/yt-dlp`），
-也可用 `YUANLIU_YTDLP` 指到别处；`lux` 用 `bash tools/get-lux.sh` 下载（多镜像 + sha256 校验）后随包安装。
+也可用 `FETCHSCRIPT_YTDLP` 指到别处；`lux` 用 `bash tools/get-lux.sh` 下载（多镜像 + sha256 校验）后随包安装。
 
 ## 平板接入（常驻服务）
 
@@ -47,36 +54,36 @@ sudo ./uninstall.sh             # 移除（状态位保留，--purge 连它一�
 http://<笔记本IP>:8901/?k=<token>
 ```
 
-- token 在 `/etc/yuanliu/token`（600，只有 root 与 systemd 能读）；**把它一起存成平板书签**，否则会 401。
+- token 在 `/etc/fetchscript/token`（600，只有 root 与 systemd 能读）；**把它一起存成平板书签**，否则会 401。
 - 页面：贴分享文案 → 「解析」（只探测）／「下载」（后台任务）→ 列表里点文件名下载。
 - JSON API（同一 token）：`POST /api/resolve`、`POST /api/download`、`GET /api/jobs`、`GET /api/health`（免 token）。
-- 并发上限 2 个下载任务；产物落 `/var/lib/yuanliu/media/`。
+- 并发上限 2 个下载任务；产物落 `/var/lib/fetchscript/media/`。
 - 安全：**fail-closed**（读不到 token 就拒绝所有受保护接口）；`/files/` 有扩展名白名单 + 目录穿越防护。
-- 换端口/IP：改 `/etc/yuanliu/env` 里的 `YUANLIU_PORT` / `YUANLIU_BIND`，`systemctl restart yuanliu`。
+- 换端口/IP：改 `/etc/fetchscript/env` 里的 `FETCHSCRIPT_PORT` / `FETCHSCRIPT_BIND`，`systemctl restart fetchscript`。
 
 ## 用法
 
 ```bash
-yuanliu engines                # 本机装了哪些引擎 + 每个平台走哪条路
-yuanliu plan "<分享文案>"       # 只判平台与路线（不联网）
-yuanliu probe "<分享文案>"      # 取元信息（联网，不下载）
-yuanliu download "<分享文案>" -o /var/lib/yuanliu/media --json
+fetchscript engines                # 本机装了哪些引擎 + 每个平台走哪条路
+fetchscript plan "<分享文案>"       # 只判平台与路线（不联网）
+fetchscript probe "<分享文案>"      # 取元信息（联网，不下载）
+fetchscript download "<分享文案>" -o /var/lib/fetchscript/media --json
 ```
 
 退出码：`0` 成功｜`2` 平台不可用｜`3` 引擎缺失｜`4` 引擎失败。
 
 ## 与 b2t 的关系（边界）
 
-- **接口是文件，不是代码**：yuanliu 只管把媒体落到目录；b2t 用**现有**的 `本地文件` 入口吃它
+- **接口是文件，不是代码**：fetchscript 只管把媒体落到目录；b2t 用**现有**的 `本地文件` 入口吃它
   （`bili2text tx /path/to/video.mp4`），**b2t 不需要为多平台改任何代码**。
-- **`share_links.py` 有两份副本**（b2t 与 yuanliu），`verify.sh` 会比对 sha256：
+- **`share_links.py` 有两份副本**（b2t 与 fetchscript），`verify.sh` 会比对 sha256：
   **改一处必须同步另一处**，否则验收会红。这是刻意的"防漂移"设计，不是冗余。
 
 ## ✅ 已跑通（2026-09-22 实测，产物在人眼前验过）
 
 | 平台 | 命令 | 结果 |
 |---|---|---|
-| **抖音** | `yuanliu download "<分享文案>" -o DIR` | ✅ `~/Videos/dy-test/杨超越-小小水手带你去远航.mp4`（6.0MB / 1080x1920 / 19.7s），抽帧确认**无水印** |
+| **抖音** | `fetchscript download "<分享文案>" -o DIR` | ✅ `~/Videos/dy-test/杨超越-小小水手带你去远航.mp4`（6.0MB / 1080x1920 / 19.7s），抽帧确认**无水印** |
 | **小红书** | 同上 | ✅ `~/Videos/xhs-test/噜噜和回声较上劲了---小红书.mp4`（1.5MB / 1280x720 / 13.9s），抽帧 + 用户目视确认**无水印** |
 
 **关键实现细节（别人不会告诉你）**：
@@ -118,8 +125,8 @@ yuanliu download "<分享文案>" -o /var/lib/yuanliu/media --json
 |---|---|
 | 文件名=视频标题 | 下载产物统一按解析出的标题命名（`names.safe_title`，去非法字符、压空白、截断 80 字） |
 | **三种模式，互不绑定** | 网页选「只要视频 / 视频+文字 / 只要文字」；CLI 用 `--transcribe`、`--text-only`、`--audio-only` |
-| 只要文字（推荐给音频类内容） | `yuanliu download "<链接>" -o DIR --text-only` —— **只下音轨 → 转写 → 删掉媒体**，只留 `.txt`。理由：文字存储成本低、检索/引用效率高；视频内容本质是音频时，留视频是浪费 |
-| 单独转文字（跟下载彻底解耦） | `yuanliu transcribe <本地文件>` —— 给任何音/视频文件出同名 `.txt`（调本机 b2t） |
+| 只要文字（推荐给音频类内容） | `fetchscript download "<链接>" -o DIR --text-only` —— **只下音轨 → 转写 → 删掉媒体**，只留 `.txt`。理由：文字存储成本低、检索/引用效率高；视频内容本质是音频时，留视频是浪费 |
+| 单独转文字（跟下载彻底解耦） | `fetchscript transcribe <本地文件>` —— 给任何音/视频文件出同名 `.txt`（调本机 b2t） |
 
 
 ## 致谢与引用

@@ -26,16 +26,16 @@ from pathlib import Path
 from typing import Callable, Sequence
 from urllib.parse import urlparse as _urlparse
 
-from yuanliu.engines import EngineFailed, EngineUnavailable
+from fetchscript.engines import EngineFailed, EngineUnavailable
 
 __all__ = ["BrowserEngine", "DEFAULT_SNIFF_SCRIPT", "DEFAULT_NODE", "MIN_INTERVAL_SECONDS", "RateLimiter"]
 
 # ⚠️ 事故教训（2026-09-22）：短时间高频自动访问把小红书打到风控。
 # 从此**同一个浏览器引擎两次请求之间强制最小间隔**，宁慢勿死。
-MIN_INTERVAL_SECONDS = float(os.getenv("YUANLIU_MIN_INTERVAL", "20"))
+MIN_INTERVAL_SECONDS = float(os.getenv("FETCHSCRIPT_MIN_INTERVAL", "20"))
 
 DEFAULT_NODE = "/usr/bin/node"
-DEFAULT_SNIFF_SCRIPT = "/opt/yuanliu/tools/sniff.cjs"
+DEFAULT_SNIFF_SCRIPT = "/opt/fetchscript/tools/sniff.cjs"
 
 # 嗅探器要访问的平台（其余平台走 yt-dlp/lux 更划算）
 BROWSER_PLATFORMS = frozenset({"douyin", "xiaohongshu", "weibo", "bilibili", "kuaishou", "unknown"})
@@ -68,8 +68,8 @@ class RateLimiter:
 class BrowserEngine:
     name: str = "browser"
     platforms: frozenset[str] = BROWSER_PLATFORMS
-    node_env: str = "YUANLIU_NODE"
-    script_env: str = "YUANLIU_SNIFF"
+    node_env: str = "FETCHSCRIPT_NODE"
+    script_env: str = "FETCHSCRIPT_SNIFF"
     default_node: str = DEFAULT_NODE
     default_script: str = DEFAULT_SNIFF_SCRIPT
     runner: Callable[[Sequence[str], float, dict], subprocess.CompletedProcess[str]] | None = field(
@@ -90,7 +90,7 @@ class BrowserEngine:
         if Path(self.default_script).is_file():
             return self.default_script
         # 开发场兜底（源码位）
-        dev = Path.home() / "dev" / "yuanliu" / "tools" / "sniff.cjs"
+        dev = Path.home() / "dev" / "fetchscript" / "tools" / "sniff.cjs"
         return str(dev) if dev.is_file() else None
 
     def _resolve(self, env_var: str, default: str, which: str) -> str | None:
@@ -119,8 +119,8 @@ class BrowserEngine:
         node, script = self.node, self.script
         if node is None or script is None:
             raise EngineUnavailable(
-                "浏览器嗅探需要 node + tools/sniff.cjs（设 YUANLIU_NODE / YUANLIU_SNIFF，"
-                "或把 tools/sniff.cjs 装到 /opt/yuanliu/tools/）。"
+                "浏览器嗅探需要 node + tools/sniff.cjs（设 FETCHSCRIPT_NODE / FETCHSCRIPT_SNIFF，"
+                "或把 tools/sniff.cjs 装到 /opt/fetchscript/tools/）。"
             )
         limiter = self.limiter or _SHARED_LIMITER
         limiter.wait()  # 防"重试轰炸"：同一引擎两次请求之间强制间隔

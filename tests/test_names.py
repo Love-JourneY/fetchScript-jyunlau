@@ -1,4 +1,4 @@
-from yuanliu.names import normalize_existing_name, safe_title
+from fetchscript.names import normalize_existing_name, safe_title
 
 
 def test_safe_title_keeps_chinese_and_fullwidth():

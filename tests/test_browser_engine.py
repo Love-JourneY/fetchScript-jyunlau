@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from yuanliu.browser import BrowserEngine
-from yuanliu.engines import EngineFailed, EngineUnavailable
+from fetchscript.browser import BrowserEngine
+from fetchscript.engines import EngineFailed, EngineUnavailable
 
 
 def _engine(tmp_path: Path, stdout: str = "", returncode: int = 0) -> BrowserEngine:
@@ -22,8 +22,8 @@ def _engine(tmp_path: Path, stdout: str = "", returncode: int = 0) -> BrowserEng
 
 
 def test_unavailable_without_node_or_script(monkeypatch) -> None:
-    monkeypatch.setenv("YUANLIU_NODE", "/nope")
-    monkeypatch.setenv("YUANLIU_SNIFF", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_NODE", "/nope")
+    monkeypatch.setenv("FETCHSCRIPT_SNIFF", "/nope")
     engine = BrowserEngine(default_node="/nope", default_script="/nope")
     assert engine.available() is False
     with pytest.raises(EngineUnavailable):
@@ -63,7 +63,7 @@ def test_download_requires_media_url(tmp_path: Path) -> None:
 
 
 def test_platform_routing_prefers_browser_for_douyin() -> None:
-    from yuanliu.engines import PLATFORM_ROUTING
+    from fetchscript.engines import PLATFORM_ROUTING
 
     assert PLATFORM_ROUTING["douyin"][0] == "browser"
     assert PLATFORM_ROUTING["xiaohongshu"][0] == "browser"
@@ -87,7 +87,7 @@ def test_download_handles_null_meta(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_rate_limiter_enforces_min_interval() -> None:
-    from yuanliu.browser import RateLimiter
+    from fetchscript.browser import RateLimiter
 
     now = {"t": 0.0}
     limiter = RateLimiter(min_interval=20, clock=lambda: now["t"])
@@ -98,14 +98,14 @@ def test_rate_limiter_enforces_min_interval() -> None:
 
 
 def test_rate_limiter_disabled_when_zero() -> None:
-    from yuanliu.browser import RateLimiter
+    from fetchscript.browser import RateLimiter
 
     limiter = RateLimiter(min_interval=0, clock=lambda: 0.0)
     assert limiter.wait() == 0.0
 
 
 def test_rate_limiter_waits_after_previous_call() -> None:
-    from yuanliu.browser import RateLimiter
+    from fetchscript.browser import RateLimiter
 
     now = {"t": 100.0}
     limiter = RateLimiter(min_interval=20, clock=lambda: now["t"])

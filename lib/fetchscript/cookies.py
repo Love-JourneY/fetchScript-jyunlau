@@ -108,7 +108,7 @@ def load_firefox_cookies(
     )
     # ⚠️ 浏览器在跑时新 cookie 还在 WAL 里：把 db(+wal/shm) 拷出来再读，
     # 否则「刚登录」的 cookie 会漏掉（immutable=1 会直接无视 WAL）。
-    with tempfile.TemporaryDirectory(prefix="yuanliu-ck-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="fetchscript-ck-") as tmp:
         snapshot = Path(tmp) / "cookies.sqlite"
         shutil.copy2(db, snapshot)
         for suffix in ("-wal", "-shm"):
@@ -142,7 +142,7 @@ def normalize_expiry(expiry: int | None) -> int:
 def to_netscape(cookies: list[CookieRecord]) -> str:
     header = [
         "# Netscape HTTP Cookie File",
-        "# 由 yuanliu 从本机浏览器导出；含登录态，权限务必 600",
+        "# 由 fetchscript 从本机浏览器导出；含登录态，权限务必 600",
         "",
     ]
     return "\n".join(header + [cookie.to_netscape() for cookie in cookies]) + "\n"

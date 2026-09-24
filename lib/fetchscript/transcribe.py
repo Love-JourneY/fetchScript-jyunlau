@@ -47,7 +47,7 @@ class Transcriber:
 
     @property
     def binary(self) -> Path | None:
-        explicit = self._binary or (Path(os.environ["YUANLIU_BILI2TEXT"]).expanduser() if os.getenv("YUANLIU_BILI2TEXT") else None)
+        explicit = self._binary or (Path(os.environ["FETCHSCRIPT_BILI2TEXT"]).expanduser() if os.getenv("FETCHSCRIPT_BILI2TEXT") else None)
         if explicit is not None:
             return explicit if explicit.exists() else None
         default = Path(DEFAULT_BILI2TEXT)
@@ -59,8 +59,8 @@ class Transcriber:
     @property
     def transcripts_dir(self) -> Path:
         explicit = self._transcripts_dir or (
-            Path(os.environ["YUANLIU_TRANSCRIPTS_DIR"]).expanduser()
-            if os.getenv("YUANLIU_TRANSCRIPTS_DIR")
+            Path(os.environ["FETCHSCRIPT_TRANSCRIPTS_DIR"]).expanduser()
+            if os.getenv("FETCHSCRIPT_TRANSCRIPTS_DIR")
             else None
         )
         return explicit or DEFAULT_TRANSCRIPTS_DIR
@@ -73,7 +73,7 @@ class Transcriber:
         if binary is None:
             raise RuntimeError(
                 "本机没有 bili2text（视频转文字）—— 装法见 ~/Documents/repo/bili2text-deploy/README.md，"
-                "或设 YUANLIU_BILI2TEXT 指向它的启动器。"
+                "或设 FETCHSCRIPT_BILI2TEXT 指向它的启动器。"
             )
         media = Path(media).expanduser()
         if not media.is_file():
@@ -117,7 +117,7 @@ class Transcriber:
         if media.suffix.lower() == ".wav":
             return media, None
         converter = self._converter or self._convert_with_ffmpeg
-        temp_path = Path(tempfile.mkdtemp(prefix="yuanliu-asr-")) / f"{media.stem}.wav"
+        temp_path = Path(tempfile.mkdtemp(prefix="fetchscript-asr-")) / f"{media.stem}.wav"
         converter(media, temp_path)
         return temp_path, temp_path
 

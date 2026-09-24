@@ -5,7 +5,7 @@
 - 模块保持零第三方依赖 ⇒ 离线可迁移、可被别的东西复用；
 - 引擎缺了要**明确报错**（`EngineUnavailable`），而不是静默降级。
 
-发现顺序：`$YUANLIU_<NAME>` → 已知安装位 → `PATH`。
+发现顺序：`$FETCHSCRIPT_<NAME>` → 已知安装位 → `PATH`。
 """
 
 from __future__ import annotations
@@ -38,10 +38,10 @@ __all__ = [
 
 DEFAULT_YTDLP_CANDIDATES = (
     "/opt/bili2text/app/.venv/bin/yt-dlp",
-    "/opt/yuanliu/vendor/yt-dlp",
+    "/opt/fetchscript/vendor/yt-dlp",
 )
 DEFAULT_LUX_CANDIDATES = (
-    "/opt/yuanliu/vendor/lux",
+    "/opt/fetchscript/vendor/lux",
     "/usr/local/bin/lux",
 )
 
@@ -105,7 +105,7 @@ def _stream(
     """
     import logging
 
-    log = logging.getLogger("yuanliu")
+    log = logging.getLogger("fetchscript")
     log.info("run: %s", " ".join(str(part) for part in cmd)[:300])
     process = subprocess.Popen(  # noqa: S603
         list(cmd),
@@ -133,7 +133,7 @@ def _stream(
                 process.kill()
                 return
 
-    stall_limit = float(os.getenv("YUANLIU_STALL_LIMIT", "90"))
+    stall_limit = float(os.getenv("FETCHSCRIPT_STALL_LIMIT", "90"))
     threading.Thread(target=watchdog, daemon=True).start()
     assert process.stdout is not None
     try:
@@ -193,7 +193,7 @@ class YtDlpEngine:
     platforms: frozenset[str] = frozenset(
         {"bilibili", "douyin", "xiaohongshu", "weibo", "tiktok", "youtube", "unknown"}
     )
-    env_var: str = "YUANLIU_YTDLP"
+    env_var: str = "FETCHSCRIPT_YTDLP"
     candidates: Sequence[str] = DEFAULT_YTDLP_CANDIDATES
 
     @property
@@ -207,7 +207,7 @@ class YtDlpEngine:
         binary = self.binary
         if binary is None:
             raise EngineUnavailable(
-                "找不到 yt-dlp：设置 YUANLIU_YTDLP 指向可执行文件，或装到 PATH。"
+                "找不到 yt-dlp：设置 FETCHSCRIPT_YTDLP 指向可执行文件，或装到 PATH。"
             )
         return binary
 
@@ -274,7 +274,7 @@ class YtDlpEngine:
             tail = (result.stdout or "").strip()[-500:]
             import logging as _logging
 
-            _logging.getLogger("yuanliu").warning("yt-dlp 退出码 %s，输出尾部：%s", result.returncode, tail)
+            _logging.getLogger("fetchscript").warning("yt-dlp 退出码 %s，输出尾部：%s", result.returncode, tail)
             raise EngineFailed(f"yt-dlp 下载失败：{tail}")
 
         created = sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
@@ -293,7 +293,7 @@ class LuxEngine:
     platforms: frozenset[str] = frozenset(
         {"bilibili", "douyin", "kuaishou", "xiaohongshu", "weibo", "unknown"}
     )
-    env_var: str = "YUANLIU_LUX"
+    env_var: str = "FETCHSCRIPT_LUX"
     candidates: Sequence[str] = DEFAULT_LUX_CANDIDATES
 
     @property
@@ -307,7 +307,7 @@ class LuxEngine:
         binary = self.binary
         if binary is None:
             raise EngineUnavailable(
-                "找不到 lux：设置 YUANLIU_LUX 指向可执行文件，或跑 tools/get-lux.sh 下载。"
+                "找不到 lux：设置 FETCHSCRIPT_LUX 指向可执行文件，或跑 tools/get-lux.sh 下载。"
             )
         return binary
 
@@ -342,14 +342,14 @@ class LuxEngine:
             tail = (result.stdout or "").strip()[-500:]
             import logging as _logging
 
-            _logging.getLogger("yuanliu").warning("lux 退出码 %s，输出尾部：%s", result.returncode, tail)
+            _logging.getLogger("fetchscript").warning("lux 退出码 %s，输出尾部：%s", result.returncode, tail)
             raise EngineFailed(f"lux 下载失败：{tail}")
         return sorted(p for p in outdir.iterdir() if p not in before and p.is_file())
 
 
 def enabled_engines() -> tuple[Engine, ...]:
     """全部引擎（含浏览器嗅探）。**延迟导入** browser 以免循环依赖。"""
-    from yuanliu.browser import BrowserEngine
+    from fetchscript.browser import BrowserEngine
 
     return (BrowserEngine(), YtDlpEngine(), LuxEngine())
 

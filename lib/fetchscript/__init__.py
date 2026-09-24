@@ -1,4 +1,4 @@
-"""yuanliu —— 分享链接 → 本地媒体（多引擎路由）。
+"""fetchscript —— 分享链接 → 本地媒体（多引擎路由）。
 
 设计边界（本屋模块纪律）：
 - **不内嵌平台解析逻辑**：抖音/快手/小红书/视频号这些平台的风控签名是活的，
@@ -6,8 +6,8 @@
 - **不做网络请求之外的副作用**：产物落 `--out` 指定目录，由调用方（b2t / 人）决定去哪。
 """
 
-from yuanliu.browser import BrowserEngine
-from yuanliu.engines import (
+from fetchscript.browser import BrowserEngine
+from fetchscript.engines import (
     ENABLED_ENGINES,
     Engine,
     EngineFailed,
@@ -17,7 +17,7 @@ from yuanliu.engines import (
     available_engines,
     pick_engines,
 )
-from yuanliu.resolve import (
+from fetchscript.resolve import (
     DownloadOutcome,
     NoEngineAvailable,
     Plan,
@@ -27,7 +27,7 @@ from yuanliu.resolve import (
     plan,
     probe,
 )
-from yuanliu.share_links import (
+from fetchscript.share_links import (
     ShareLink,
     ShareLinkError,
     canonicalize_url,

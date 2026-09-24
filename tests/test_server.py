@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from yuanliu.server import YuanliuServer, ServerConfig, build_server
+from fetchscript.server import FetchscriptServer, ServerConfig, build_server
 
 
 @pytest.fixture()
@@ -59,7 +59,7 @@ def test_resolve_empty_text(server) -> None:
 
 def test_files_path_traversal_blocked(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     (tmp_path / "secret.txt").write_text("nope", encoding="utf-8")
     assert app.resolve_file("../secret.txt") is None
     assert app.resolve_file("/etc/passwd") is None
@@ -67,14 +67,14 @@ def test_files_path_traversal_blocked(tmp_path: Path) -> None:
 
 def test_files_rejects_non_whitelisted_suffix(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     (config.media_dir / "x.sh").write_text("rm -rf /", encoding="utf-8")
     assert app.resolve_file("x.sh") is None
 
 
 def test_files_serves_video(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     (config.media_dir / "v.mp4").write_bytes(b"data")
     assert app.resolve_file("v.mp4") is not None
 
@@ -82,7 +82,7 @@ def test_files_serves_video(tmp_path: Path) -> None:
 def test_completion_requires_token_config() -> None:
     """fail-closed：没配 token 时任何受保护接口都拒绝。"""
     config = ServerConfig(bind="127.0.0.1", port=0, token="", media_dir=Path("/tmp/x"))
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     assert app.config.token == ""
 
 
@@ -105,7 +105,7 @@ def test_index_without_token_warns(server) -> None:
 
 def test_probe_summary_is_human_readable() -> None:
     """yt-dlp 的 info dict 要归一成标题/时长/作者 —— 否则前端显示成"没做"（实测痛点）。"""
-    from yuanliu.resolve import summarize_probe
+    from fetchscript.resolve import summarize_probe
 
     summary = summarize_probe(
         {
@@ -124,7 +124,7 @@ def test_probe_summary_is_human_readable() -> None:
 
 
 def test_probe_summary_for_browser_engine() -> None:
-    from yuanliu.resolve import summarize_probe
+    from fetchscript.resolve import summarize_probe
 
     summary = summarize_probe(
         {
@@ -141,11 +141,11 @@ def test_probe_summary_for_browser_engine() -> None:
 def test_job_reports_progress(tmp_path: Path, monkeypatch) -> None:
     """任务要有进度与阶段，前端才能画进度条。"""
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     seen = {}
 
     def fake_download(text, outdir, *, cookies=None, transcribe=False, keep_media=True, audio_only=False, on_progress=None):
-        from yuanliu.resolve import DownloadOutcome, plan
+        from fetchscript.resolve import DownloadOutcome, plan
 
         if on_progress:
             on_progress(0.42)
@@ -154,7 +154,7 @@ def test_job_reports_progress(tmp_path: Path, monkeypatch) -> None:
         return DownloadOutcome(plan=plan("https://www.bilibili.com/video/BV1xx411c7XD"), engine="fake",
                                files=[Path(outdir) / "v.mp4"])
 
-    monkeypatch.setattr("yuanliu.server.download_media", fake_download)
+    monkeypatch.setattr("fetchscript.server.download_media", fake_download)
     job = app.submit("https://www.bilibili.com/video/BV1xx411c7XD")
     import time
 
@@ -179,7 +179,7 @@ def test_login_rejects_wrong_password(server) -> None:
 
 
 def test_login_throttle_delays_after_repeated_failures() -> None:
-    from yuanliu.server import LoginThrottle
+    from fetchscript.server import LoginThrottle
 
     throttle = LoginThrottle(max_attempts=2, base_delay=1.0)
     assert throttle.delay_for("1.2.3.4") == 0.0
@@ -192,7 +192,7 @@ def test_login_throttle_delays_after_repeated_failures() -> None:
 
 def test_list_files_reports_media(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     (config.media_dir / "a.mp4").write_bytes(b"x" * 10)
     (config.media_dir / "note.txt").write_text("hi", encoding="utf-8")
     names = {entry["name"] for entry in app.list_files()}
@@ -201,7 +201,7 @@ def test_list_files_reports_media(tmp_path: Path) -> None:
 
 def test_delete_file_removes_it(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     target = config.media_dir / "a.mp4"
     target.write_bytes(b"x")
     assert app.delete_file("a.mp4") == "ok"
@@ -210,7 +210,7 @@ def test_delete_file_removes_it(tmp_path: Path) -> None:
 
 def test_delete_file_blocks_traversal(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     outside = tmp_path / "important.txt"
     outside.write_text("keep", encoding="utf-8")
     assert app.delete_file("../important.txt") == "forbidden"
@@ -219,7 +219,7 @@ def test_delete_file_blocks_traversal(tmp_path: Path) -> None:
 
 def test_delete_file_blocks_non_whitelisted_suffix(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     script = config.media_dir / "evil.sh"
     script.write_text("rm -rf /", encoding="utf-8")
     assert app.delete_file("evil.sh") == "forbidden"
@@ -228,4 +228,4 @@ def test_delete_file_blocks_non_whitelisted_suffix(tmp_path: Path) -> None:
 
 def test_delete_missing_file(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
-    assert YuanliuServer(config).delete_file("nope.mp4") == "not_found"
+    assert FetchscriptServer(config).delete_file("nope.mp4") == "not_found"

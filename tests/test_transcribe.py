@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from yuanliu.transcribe import Transcriber, wait_for_new_file
+from fetchscript.transcribe import Transcriber, wait_for_new_file
 
 
 def _fake_converter(source: Path, target: Path) -> None:

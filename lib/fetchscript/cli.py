@@ -1,9 +1,9 @@
-"""命令行入口：``yuanliu <子命令>``。
+"""命令行入口：``fetchscript <子命令>``。
 
-    yuanliu engines                      # 看本机装了哪些引擎、每个平台走哪条路
-    yuanliu plan "<分享文案>"             # 只判平台与路线（不联网）
-    yuanliu probe "<分享文案>"            # 取元信息（联网，不下载）
-    yuanliu download "<分享文案>" -o DIR  # 下载（联网）
+    fetchscript engines                      # 看本机装了哪些引擎、每个平台走哪条路
+    fetchscript plan "<分享文案>"             # 只判平台与路线（不联网）
+    fetchscript probe "<分享文案>"            # 取元信息（联网，不下载）
+    fetchscript download "<分享文案>" -o DIR  # 下载（联网）
 
 退出码：0 成功｜2 平台不可用｜3 引擎缺失｜4 引擎失败。
 """
@@ -15,15 +15,15 @@ import json
 import sys
 from pathlib import Path
 
-from yuanliu import __version__
-from yuanliu.cookies import (
+from fetchscript import __version__
+from fetchscript.cookies import (
     DEFAULT_COOKIE_DOMAINS,
     find_firefox_profiles,
     load_firefox_cookies,
     to_netscape,
 )
-from yuanliu.engines import EngineFailed, EngineUnavailable, available_engines
-from yuanliu.resolve import NoEngineAvailable, ResolveError, describe_routes, download, plan, probe
+from fetchscript.engines import EngineFailed, EngineUnavailable, available_engines
+from fetchscript.resolve import NoEngineAvailable, ResolveError, describe_routes, download, plan, probe
 
 EXIT_OK = 0
 EXIT_UNSUPPORTED = 2
@@ -32,8 +32,8 @@ EXIT_ENGINE_FAILED = 4
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="yuanliu", description="分享链接 → 本地媒体（多引擎路由）")
-    parser.add_argument("--version", action="version", version=f"yuanliu {__version__}")
+    parser = argparse.ArgumentParser(prog="fetchscript", description="分享链接 → 本地媒体（多引擎路由）")
+    parser.add_argument("--version", action="version", version=f"fetchscript {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("engines", help="列出引擎可用性与平台路由")
@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve", help="起常驻服务（网页 + JSON API，给平板接入）")
     sv.add_argument("--bind", default=None, help="监听地址（默认 0.0.0.0，供局域网）")
     sv.add_argument("--port", type=int, default=None, help="端口（默认 8901）")
-    sv.add_argument("--token", default=None, help="访问 token（默认读 YUANLIU_TOKEN）")
+    sv.add_argument("--token", default=None, help="访问 token（默认读 FETCHSCRIPT_TOKEN）")
 
     ck = sub.add_parser("cookies", help="从本机浏览器导出 cookies.txt（Firefox/LibreWolf 明文库）")
     ck.add_argument("--list", action="store_true", help="只列出可用 profile 与命中数量")
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "transcribe":
             from pathlib import Path as _Path
 
-            from yuanliu.transcribe import Transcriber
+            from fetchscript.transcribe import Transcriber
 
             media = _Path(args.path).expanduser()
             if not media.is_file():
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         if args.command == "serve":
-            from yuanliu.server import main as serve_main
+            from fetchscript.server import main as serve_main
 
             argv = []
             if args.bind:

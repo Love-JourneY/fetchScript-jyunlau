@@ -1,6 +1,6 @@
-"""share_links 在 yuanliu 侧的最小回归集（b2t 侧有同名完整测试）。"""
+"""share_links 在 fetchscript 侧的最小回归集（b2t 侧有同名完整测试）。"""
 
-from yuanliu.share_links import (
+from fetchscript.share_links import (
     detect_platform,
     is_short_url,
     parse_share_text,
@@ -35,7 +35,7 @@ def test_share_text_with_traditional_chinese() -> None:
 
 def test_parse_input_accepts_bare_bv() -> None:
     """Nija 实测诉求：直接贴裸 BV 号也要认。"""
-    from yuanliu.share_links import parse_input
+    from fetchscript.share_links import parse_input
 
     link = parse_input("BV198tR6EEit")
     assert link.platform == "bilibili"
@@ -43,7 +43,7 @@ def test_parse_input_accepts_bare_bv() -> None:
 
 
 def test_parse_input_accepts_scheme_less_host() -> None:
-    from yuanliu.share_links import parse_input
+    from fetchscript.share_links import parse_input
 
     link = parse_input("www.bilibili.com/video/BV198tR6EEit?p=2")
     assert link.platform == "bilibili"
@@ -53,14 +53,14 @@ def test_parse_input_accepts_scheme_less_host() -> None:
 def test_parse_input_still_rejects_plain_text() -> None:
     import pytest
 
-    from yuanliu.share_links import ShareLinkError, parse_input
+    from fetchscript.share_links import ShareLinkError, parse_input
 
     with pytest.raises(ShareLinkError):
         parse_input("今天天气不错")
 
 
 def test_parse_input_prefers_share_text_url() -> None:
-    from yuanliu.share_links import parse_input
+    from fetchscript.share_links import parse_input
 
     link = parse_input("看看这个 https://v.douyin.com/iRNBho6G/ 复制此链接")
     assert link.platform == "douyin"

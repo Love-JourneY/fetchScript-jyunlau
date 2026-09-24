@@ -1,6 +1,6 @@
 import pytest
 
-from yuanliu import browser as browser_mod
+from fetchscript import browser as browser_mod
 
 
 @pytest.fixture(autouse=True)

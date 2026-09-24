@@ -9,9 +9,9 @@
 const fs = require('fs');
 // Playwright 位置：环境变量优先 → 常见安装位 → 让 require 自己找
 const PW_CANDIDATES = [
-  process.env.YUANLIU_PLAYWRIGHT,
+  process.env.FETCHSCRIPT_PLAYWRIGHT,
   process.env.PLAYWRIGHT_PATH,
-  '/opt/yuanliu/vendor/node_modules/playwright',
+  '/opt/fetchscript/vendor/node_modules/playwright',
   '/home/bubu12/dev/qwen-audio-agent/node_modules/playwright',
 ].filter(Boolean);
 let PW = 'playwright';

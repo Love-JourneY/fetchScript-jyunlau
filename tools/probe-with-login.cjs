@@ -84,7 +84,7 @@ function parseNetscape(file) {
       mp4InRender: [...new Set((raw.match(/https?:\\?\/\\?\/[^"'\\ ]+?\.mp4[^"'\\ ]*/g) || []))].slice(0, 3),
     };
   });
-  await page.screenshot({ path: '/home/bubu12/dev/yuanliu/tools/douyin-with-login.png' }).catch(() => {});
+  await page.screenshot({ path: '/home/bubu12/dev/fetchscript/tools/douyin-with-login.png' }).catch(() => {});
   console.log(JSON.stringify(info, null, 1));
   await browser.close();
 })();

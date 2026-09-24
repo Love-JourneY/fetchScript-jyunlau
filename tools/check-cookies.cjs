@@ -1,7 +1,7 @@
 // 验证 cookie 能真的注入浏览器（历史坑：毫秒过期时间 ⇒ 全军覆没）
 const fs=require('fs');
 const PW='/home/bubu12/dev/qwen-audio-agent/node_modules/playwright'; const {chromium}=require(PW);
-const file=process.argv[2]||process.env.HOME+'/.cache/yuanliu/cookies.txt';
+const file=process.argv[2]||process.env.HOME+'/.cache/fetchscript/cookies.txt';
 const out=[];
 for(const line of fs.readFileSync(file,'utf8').split('\n')){
   if(!line||line.startsWith('#'))continue; const f=line.split('\t'); if(f.length<7)continue;

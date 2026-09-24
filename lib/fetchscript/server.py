@@ -1,12 +1,12 @@
-"""yuanliu 常驻服务：给平板/手机用的"贴链接就下载"网页 + JSON API。
+"""fetchscript 常驻服务：给平板/手机用的"贴链接就下载"网页 + JSON API。
 
 零第三方依赖（标准库 http.server）—— 离线自洽、随包可迁移，不需要 pip 装任何东西。
 浏览器嗅探那部分仍然调 `tools/sniff.cjs`（node + Playwright），那是可选能力。
 
 安全模型（LAN 场景，默认 fail-closed）：
-- 必须带 token：`?k=<token>` 或 `X-Token` 头；token 放 `/etc/yuanliu/env`（600 可见范围由 systemd 控制）。
+- 必须带 token：`?k=<token>` 或 `X-Token` 头；token 放 `/etc/fetchscript/env`（600 可见范围由 systemd 控制）。
 - `/files/<name>` 只服务**白名单扩展名**且**必须在状态位目录内**（防穿越）。
-- 不做"匿名开放"——本机 `/etc/yuanliu/env` 里有 token，服务可触发下载，不能无条件裸奔。
+- 不做"匿名开放"——本机 `/etc/fetchscript/env` 里有 token，服务可触发下载，不能无条件裸奔。
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from yuanliu import __version__
-from yuanliu.engines import EngineFailed, EngineUnavailable
-from yuanliu.resolve import (
+from fetchscript import __version__
+from fetchscript.engines import EngineFailed, EngineUnavailable
+from fetchscript.resolve import (
     NoEngineAvailable,
     ResolveError,
     download as download_media,
@@ -36,9 +36,9 @@ from yuanliu.resolve import (
     summarize_probe,
 )
 
-__all__ = ["ServerConfig", "YuanliuServer", "main", "MAX_CONCURRENT_JOBS"]
+__all__ = ["ServerConfig", "FetchscriptServer", "main", "MAX_CONCURRENT_JOBS"]
 
-logger = logging.getLogger("yuanliu")
+logger = logging.getLogger("fetchscript")
 
 MAX_CONCURRENT_JOBS = 2
 FILE_ALLOWED_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4a", ".mp3", ".jpg", ".jpeg", ".png", ".webp", ".txt"}
@@ -49,18 +49,18 @@ class ServerConfig:
     bind: str = "0.0.0.0"
     port: int = 8901
     token: str = ""
-    media_dir: Path = Path("/var/lib/yuanliu/media")
+    media_dir: Path = Path("/var/lib/fetchscript/media")
     cookies: Path | None = None
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
-        state = Path(os.getenv("YUANLIU_STATE_DIR", "/var/lib/yuanliu")).expanduser()
-        cookies = os.getenv("YUANLIU_COOKIES", "").strip()
+        state = Path(os.getenv("FETCHSCRIPT_STATE_DIR", "/var/lib/fetchscript")).expanduser()
+        cookies = os.getenv("FETCHSCRIPT_COOKIES", "").strip()
         return cls(
-            bind=os.getenv("YUANLIU_BIND", "0.0.0.0"),
-            port=int(os.getenv("YUANLIU_PORT", "8901")),
-            token=os.getenv("YUANLIU_TOKEN", "").strip(),
-            media_dir=Path(os.getenv("YUANLIU_MEDIA_DIR", state / "media")).expanduser(),
+            bind=os.getenv("FETCHSCRIPT_BIND", "0.0.0.0"),
+            port=int(os.getenv("FETCHSCRIPT_PORT", "8901")),
+            token=os.getenv("FETCHSCRIPT_TOKEN", "").strip(),
+            media_dir=Path(os.getenv("FETCHSCRIPT_MEDIA_DIR", state / "media")).expanduser(),
             cookies=Path(cookies).expanduser() if cookies else None,
         )
 
@@ -127,7 +127,7 @@ class LoginThrottle:
             self._failures.pop(key, None)
 
 
-class YuanliuServer:
+class FetchscriptServer:
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
         self.jobs: dict[str, Job] = {}
@@ -280,7 +280,7 @@ class YuanliuServer:
 
 PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>yuanliu</title>
+<title>fetchscript</title>
 <style>
  :root{color-scheme:dark}
  body{margin:0;padding:16px;font:16px/1.5 system-ui,-apple-system,"Noto Sans CJK SC",sans-serif;background:#111;color:#eee}
@@ -299,7 +299,7 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
  @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
  .stage{font-size:13px;color:#9ca3af}
 </style></head><body>
-<h1>yuanliu <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
+<h1>fetchscript <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
 <div id="banner">__BANNER__</div>
 <div id="gate" class="card" style="display:none">
   <div>请输入密码（一次即可，会记在这台设备上）</div>
@@ -328,13 +328,13 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 </div>
 <script>
 // 密码模式：优先用 URL 里的 k（老书签），否则用本机记住的密码
-let K = new URLSearchParams(location.search).get('k') || localStorage.getItem('yuanliu_pw') || '';
+let K = new URLSearchParams(location.search).get('k') || localStorage.getItem('fetchscript_pw') || '';
 document.getElementById('k').textContent = K ? '已登录' : '';
 async function login(){
   const pw = document.getElementById('pw').value;
   if(!pw) return;
   const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})});
-  if(r.ok){ localStorage.setItem('yuanliu_pw', pw); K = pw; showApp(); }
+  if(r.ok){ localStorage.setItem('fetchscript_pw', pw); K = pw; showApp(); }
   else { document.getElementById('gateMsg').textContent = '密码不对'; }
 }
 function showApp(){
@@ -344,7 +344,7 @@ function showApp(){
   load();
 }
 function logout(){
-  localStorage.removeItem('yuanliu_pw'); K='';
+  localStorage.removeItem('fetchscript_pw'); K='';
   document.getElementById('app').style.display='none';
   document.getElementById('gate').style.display='block';
 }
@@ -355,7 +355,7 @@ async function api(path, body){
   if (r.status === 401) {
     document.getElementById('banner').innerHTML =
       '<div class="card"><b class="bad">token 不对或已过期</b>：你打开的链接里的 k 不是这台机器当前的 token。'
-      + '请在电脑上执行 <code>cat /etc/yuanliu/token</code>，用里面那个值重新拼 URL。</div>';
+      + '请在电脑上执行 <code>cat /etc/fetchscript/token</code>，用里面那个值重新拼 URL。</div>';
   }
   return {status:r.status, j};
 }
@@ -375,7 +375,7 @@ async function loadFiles(){
   if(!r.ok) return;
   const j = await r.json();
   const el = document.getElementById('files');
-  el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">文件（服务机上 /var/lib/yuanliu/media）</h1>';
+  el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">文件（服务机上 /var/lib/fetchscript/media）</h1>';
   const fmt = n => n>1048576 ? (n/1048576).toFixed(1)+'MB' : (n/1024).toFixed(0)+'KB';
   if(!(j.files||[]).length){ el.innerHTML += '<div class="stage">（空）</div>'; return; }
   (j.files||[]).forEach(f=>{
@@ -417,7 +417,7 @@ async function load(){
   if (K) {
     const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: K})}).catch(()=>null);
     if (r && r.ok) { showApp(); return; }
-    localStorage.removeItem('yuanliu_pw'); K='';
+    localStorage.removeItem('fetchscript_pw'); K='';
   }
   document.getElementById('gate').style.display = 'block';
 })();
@@ -425,11 +425,11 @@ async function load(){
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = f"yuanliu/{__version__}"
-    app: YuanliuServer
+    server_version = f"fetchscript/{__version__}"
+    app: FetchscriptServer
 
     def log_message(self, fmt: str, *args: Any) -> None:  # 保持 journal 干净
-        if os.getenv("YUANLIU_VERBOSE"):
+        if os.getenv("FETCHSCRIPT_VERBOSE"):
             super().log_message(fmt, *args)
 
     # ---- helpers ----
@@ -472,7 +472,7 @@ class _Handler(BaseHTTPRequestHandler):
                 banner = '<div class="card ok">token 有效，可以直接用。</div>'
             elif query.get("k"):
                 banner = ('<div class="card"><b class="bad">token 无效或已过期</b>'
-                          '（多半用了旧链接）。请在电脑上跑 <code>cat /etc/yuanliu/token</code>，'
+                          '（多半用了旧链接）。请在电脑上跑 <code>cat /etc/fetchscript/token</code>，'
                           '用里面的值重新拼 <code>?k=…</code>。</div>')
             else:
                 banner = ('<div class="card"><b class="run">链接里没带 token</b>：请在 URL 后面加 '
@@ -566,7 +566,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def build_server(config: ServerConfig) -> ThreadingHTTPServer:
-    app = YuanliuServer(config)
+    app = FetchscriptServer(config)
     handler = type("BoundHandler", (_Handler,), {"app": app})
     httpd = ThreadingHTTPServer((config.bind, config.port), handler)
     httpd.daemon_threads = True
@@ -598,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr
     )
 
-    parser = argparse.ArgumentParser(prog="yuanliu serve", description="常驻服务（网页 + JSON API）")
+    parser = argparse.ArgumentParser(prog="fetchscript serve", description="常驻服务（网页 + JSON API）")
     parser.add_argument("--bind", default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--token", default=None)
@@ -613,11 +613,11 @@ def main(argv: list[str] | None = None) -> int:
         config.token = args.token
 
     if not config.token:
-        print("拒绝启动：没有 token（设 YUANLIU_TOKEN，或 install.sh 生成 /etc/yuanliu/env）")
+        print("拒绝启动：没有 token（设 FETCHSCRIPT_TOKEN，或 install.sh 生成 /etc/fetchscript/env）")
         return 2
 
     httpd = build_server(config)
-    print(f"yuanliu 服务已起：http://{config.bind}:{config.port}/?k={config.token}")
+    print(f"fetchscript 服务已起：http://{config.bind}:{config.port}/?k={config.token}")
     for ip in _lan_addresses():
         print(f"  平板可用：http://{ip}:{config.port}/?k={config.token}")
     print(f"  下载目录：{config.media_dir}")

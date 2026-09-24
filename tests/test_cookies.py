@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-from yuanliu.cookies import (
+from fetchscript.cookies import (
     CookieRecord,
     load_firefox_cookies,
     to_netscape,
@@ -59,7 +59,7 @@ def test_missing_profile_raises(tmp_path: Path) -> None:
 
 
 def test_normalize_expiry_milliseconds(tmp_path: Path) -> None:
-    from yuanliu.cookies import normalize_expiry
+    from fetchscript.cookies import normalize_expiry
 
     assert normalize_expiry(1821538792000) == 1821538792  # 毫秒 → 秒
     assert normalize_expiry(1821538792) == 1821538792
