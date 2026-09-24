@@ -442,7 +442,16 @@ class _Handler(BaseHTTPRequestHandler):
             supplied = query["k"][0]
         elif self.headers.get("X-Token"):
             supplied = self.headers["X-Token"]
-        return supplied == expected
+        if supplied == expected:
+            return True
+        # 「已过门」放行：统一认证（port-gate）在前面验过一次，转发时注入共享头。
+        # 只有 **来自 loopback** 且头匹配才认 —— 直连（哪怕是 LAN）一律不认。
+        gate = os.getenv("FETCHSCRIPT_GATE_TOKEN", "").strip()
+        if gate:
+            peer = self.client_address[0] if self.client_address else ""
+            if peer in {"127.0.0.1", "::1", "::ffff:127.0.0.1"} and self.headers.get("X-Gate-Token") == gate:
+                return True
+        return False
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)

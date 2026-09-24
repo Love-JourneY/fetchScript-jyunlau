@@ -229,3 +229,34 @@ def test_delete_file_blocks_non_whitelisted_suffix(tmp_path: Path) -> None:
 def test_delete_missing_file(tmp_path: Path) -> None:
     config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
     assert FetchscriptServer(config).delete_file("nope.mp4") == "not_found"
+
+
+def test_gate_token_accepted_only_from_loopback(monkeypatch, tmp_path) -> None:
+    """统一认证门（port-gate）转发时注入 X-Gate-Token；只有 loopback 才认。"""
+    config = ServerConfig(bind="127.0.0.1", port=0, token="secret", media_dir=tmp_path / "media")
+    from fetchscript.server import _Handler
+
+    _Handler.app = FetchscriptServer(config)   # 给基类挂上 app（真实运行时由 build_server 绑定子类）
+
+    monkeypatch.setenv("FETCHSCRIPT_GATE_TOKEN", "gate-shared")
+
+    class Fake(_Handler):
+        def __init__(self):  # noqa: D107 - 只测鉴权逻辑
+            self.headers = {"X-Gate-Token": "gate-shared"}
+            self.client_address = ("127.0.0.1", 1234)
+
+    assert Fake()._token_ok({}) is True
+
+    class Lan(_Handler):
+        def __init__(self):
+            self.headers = {"X-Gate-Token": "gate-shared"}
+            self.client_address = ("192.168.31.9", 1234)
+
+    assert Lan()._token_ok({}) is False
+
+    class WrongHeader(_Handler):
+        def __init__(self):
+            self.headers = {"X-Gate-Token": "nope"}
+            self.client_address = ("127.0.0.1", 1234)
+
+    assert WrongHeader()._token_ok({}) is False
