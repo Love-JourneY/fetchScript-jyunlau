@@ -188,3 +188,44 @@ def test_login_throttle_delays_after_repeated_failures() -> None:
     assert throttle.delay_for("1.2.3.4") > 0
     throttle.reset("1.2.3.4")
     assert throttle.delay_for("1.2.3.4") == 0.0
+
+
+def test_list_files_reports_media(tmp_path: Path) -> None:
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    app = YuanliuServer(config)
+    (config.media_dir / "a.mp4").write_bytes(b"x" * 10)
+    (config.media_dir / "note.txt").write_text("hi", encoding="utf-8")
+    names = {entry["name"] for entry in app.list_files()}
+    assert names == {"a.mp4", "note.txt"}
+
+
+def test_delete_file_removes_it(tmp_path: Path) -> None:
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    app = YuanliuServer(config)
+    target = config.media_dir / "a.mp4"
+    target.write_bytes(b"x")
+    assert app.delete_file("a.mp4") == "ok"
+    assert not target.exists()
+
+
+def test_delete_file_blocks_traversal(tmp_path: Path) -> None:
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    app = YuanliuServer(config)
+    outside = tmp_path / "important.txt"
+    outside.write_text("keep", encoding="utf-8")
+    assert app.delete_file("../important.txt") == "forbidden"
+    assert outside.exists()
+
+
+def test_delete_file_blocks_non_whitelisted_suffix(tmp_path: Path) -> None:
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    app = YuanliuServer(config)
+    script = config.media_dir / "evil.sh"
+    script.write_text("rm -rf /", encoding="utf-8")
+    assert app.delete_file("evil.sh") == "forbidden"
+    assert script.exists()
+
+
+def test_delete_missing_file(tmp_path: Path) -> None:
+    config = ServerConfig(bind="127.0.0.1", port=0, token="t", media_dir=tmp_path / "media")
+    assert YuanliuServer(config).delete_file("nope.mp4") == "not_found"

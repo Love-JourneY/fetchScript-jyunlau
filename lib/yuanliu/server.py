@@ -228,14 +228,54 @@ class YuanliuServer:
             payload["probe_error"] = str(exc)[:300]
         return payload
 
-    def resolve_file(self, name: str) -> Path | None:
-        safe = Path(name).name
-        if Path(safe).suffix.lower() not in FILE_ALLOWED_SUFFIXES:
+    def list_files(self) -> list[dict[str, Any]]:
+        """媒体目录清单（网页文件管理用）。"""
+        entries: list[dict[str, Any]] = []
+        directory = self.config.media_dir
+        if not directory.is_dir():
+            return entries
+        for path in sorted(directory.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not path.is_file() or path.suffix.lower() not in FILE_ALLOWED_SUFFIXES:
+                continue
+            stat = path.stat()
+            entries.append({"name": path.name, "size": stat.st_size, "mtime": stat.st_mtime})
+        return entries
+
+    def _safe_media_path(self, name: str) -> Path | None:
+        """只做**校验**（白名单 + 防穿越），不要求文件存在。
+
+        带路径分隔符 / `..` 的一律**直接拒绝**（而不是悄悄取 basename）——
+        语义清楚、拒绝得明白，避免"看着删了别的目录里的东西"的错觉。
+        """
+        raw = (name or "").strip()
+        if any(sep in raw for sep in ("/", "\\")) or ".." in raw:
+            return None
+        safe = Path(raw).name
+        if not safe or Path(safe).suffix.lower() not in FILE_ALLOWED_SUFFIXES:
             return None
         candidate = (self.config.media_dir / safe).resolve()
         if not str(candidate).startswith(str(self.config.media_dir.resolve())):
             return None
-        return candidate if candidate.is_file() else None
+        return candidate
+
+    def resolve_file(self, name: str) -> Path | None:
+        candidate = self._safe_media_path(name)
+        return candidate if candidate is not None and candidate.is_file() else None
+
+    def delete_file(self, name: str) -> str:
+        """删除媒体目录里的一个文件。返回 'ok' / 'not_found' / 'forbidden'。"""
+        candidate = self._safe_media_path(name)
+        if candidate is None:
+            return "forbidden"
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            return "not_found"
+        except OSError as exc:
+            logger.warning("删除失败 %s：%s", candidate, exc)
+            return "forbidden"
+        logger.info("已删除文件 %s", candidate.name)
+        return "ok"
 
 
 PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -284,6 +324,7 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <div class="row"><span>平台/路线会显示在下面</span><span id="k"></span></div>
 <div id="out"></div>
 <div id="jobs"></div>
+<div id="files"></div>
 </div>
 <script>
 // 密码模式：优先用 URL 里的 k（老书签），否则用本机记住的密码
@@ -328,6 +369,29 @@ async function go(kind){
   const {status,j} = await api('/api/'+kind, body);
   document.getElementById('out').innerHTML = '<div class="card"><pre>'+JSON.stringify(j,null,1).replace(/[<>]/g,'')+'</pre></div>';
   if(kind==='download') setTimeout(load, 1500);
+}
+async function loadFiles(){
+  const r = await fetch('/api/files'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
+  if(!r.ok) return;
+  const j = await r.json();
+  const el = document.getElementById('files');
+  el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">文件（服务机上 /var/lib/yuanliu/media）</h1>';
+  const fmt = n => n>1048576 ? (n/1048576).toFixed(1)+'MB' : (n/1024).toFixed(0)+'KB';
+  if(!(j.files||[]).length){ el.innerHTML += '<div class="stage">（空）</div>'; return; }
+  (j.files||[]).forEach(f=>{
+    const url = '/files/'+encodeURIComponent(f.name)+(K?('?k='+encodeURIComponent(K)):'');
+    const when = new Date(f.mtime*1000).toLocaleString();
+    el.innerHTML += '<div class="card"><div><a href="'+url+'">'+f.name+'</a></div>'
+      + '<div class="stage">'+fmt(f.size)+' · '+when+'</div>'
+      + '<button class="sec" onclick="delFile(\''+f.name.replace(/'/g,"\\'")+'\')">删除</button></div>';
+  });
+}
+async function delFile(name){
+  if(!confirm('确定删除「'+name+'」？删了就没了。')) return;
+  const r = await fetch('/api/files/delete'+(K?('?k='+encodeURIComponent(K)):''), {method:'POST',
+    headers:{'Content-Type':'application/json','X-Token':K}, body: JSON.stringify({name})});
+  if(!r.ok){ alert('删除失败：'+(await r.text()).slice(0,120)); }
+  loadFiles();
 }
 async function load(){
   const r = await fetch('/api/jobs'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
@@ -438,6 +502,9 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/jobs":
             self._json(200, {"jobs": self.app.snapshot()})
             return
+        if parsed.path == "/api/files":
+            self._json(200, {"files": self.app.list_files()})
+            return
         if parsed.path.startswith("/files/"):
             name = urllib.parse.unquote(parsed.path[len("/files/") :])
             path = self.app.resolve_file(name)
@@ -483,6 +550,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(exc), "kind": type(exc).__name__})
             except Exception as exc:  # noqa: BLE001
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            return
+        if parsed.path == "/api/files/delete":
+            result = self.app.delete_file(str(payload.get("name") or ""))
+            self._json(200 if result == "ok" else (404 if result == "not_found" else 403), {"result": result})
             return
         if parsed.path == "/api/download":
             mode = str(payload.get("mode") or "").strip()
