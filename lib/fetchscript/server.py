@@ -412,8 +412,15 @@ async function load(){
     el.innerHTML += html+'</div>';
   });
 }
-// 启动：有密码就先验一下，验不过就回退到密码门
+// 启动：先探一下"/api/jobs"能不能通 ——
+// 统一认证门（port-gate）已经在前面验过并把凭证注入进来时，这里直接就通了，
+// 于是**不再要求用户输第二遍密码**（这就是单点登录在本页的落点）。
+async function probeGate(){
+  const r = await fetch('/api/jobs', {headers:{'X-Token': K || ''}}).catch(()=>null);
+  return !!(r && r.ok);
+}
 (async () => {
+  if (await probeGate()) { showApp(); return; }
   if (K) {
     const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: K})}).catch(()=>null);
     if (r && r.ok) { showApp(); return; }
