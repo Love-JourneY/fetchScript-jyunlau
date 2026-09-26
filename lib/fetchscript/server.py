@@ -302,7 +302,7 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <h1>fetchscript <span style="font-size:13px;color:#6b7280">v__VERSION__</span></h1>
 <div id="banner">__BANNER__</div>
 <div id="gate" class="card" style="display:none">
-  <div>请输入密码（一次即可，会记在这台设备上）</div>
+  <div>本服务通常由<b>统一认证门</b>保护；只有独立部署（不经门）时才需要在这里输密码。</div>
   <div style="margin-top:8px"><input id="pw" type="password" placeholder="密码" autocomplete="current-password"
      style="padding:12px;font-size:16px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#eee"></div>
   <button onclick="login()">进入</button>
@@ -383,7 +383,9 @@ async function loadFiles(){
     const when = new Date(f.mtime*1000).toLocaleString();
     el.innerHTML += '<div class="card"><div><a href="'+url+'">'+f.name+'</a></div>'
       + '<div class="stage">'+fmt(f.size)+' · '+when+'</div>'
-      + '<button class="sec" onclick="delFile(\''+f.name.replace(/'/g,"\\'")+'\')">删除</button></div>';
+      // ⚠️ 文件名可能含引号/中文：**不要拼进 onclick 字符串**（拼错一个引号整个页面 JS 报废，实测踩过）
+      + '<button class="sec" data-name="'+encodeURIComponent(f.name)+'"'
+      + ' onclick="delFile(decodeURIComponent(this.dataset.name))">删除</button></div>';
   });
 }
 async function delFile(name){
@@ -442,22 +444,26 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- helpers ----
     def _token_ok(self, query: dict[str, list[str]]) -> bool:
         expected = self.app.config.token
-        if not expected:
-            return False  # fail-closed：没配 token 就不开
         supplied = ""
         if query.get("k"):
             supplied = query["k"][0]
         elif self.headers.get("X-Token"):
             supplied = self.headers["X-Token"]
-        if supplied == expected:
+        if expected and supplied == expected:
             return True
-        # 「已过门」放行：统一认证（port-gate）在前面验过一次，转发时注入共享头。
-        # 只有 **来自 loopback** 且头匹配才认 —— 直连（哪怕是 LAN）一律不认。
+
+        # ── 统一鉴权模型（Nija 2026-09-25 定）──────────────────────────────
+        # 对外只有一个门：port-gate（TLS + 登录）。本服务**只听回环**，网络侧根本到不了它；
+        # 门转发时注入 X-Gate-Token。所以：
+        #   · 来自 loopback（就是本机/门）→ 放行。本机进程本来就能读状态位，无需再设一道密码。
+        #   · 非 loopback → 只有在"配了 token 且 token 正确"时才放行（纵深防御/兜底）。
+        # ❌ 不再要求用户拼 `?k=<令牌>`；那种把凭据塞进 URL 的做法已废弃。
         gate = os.getenv("FETCHSCRIPT_GATE_TOKEN", "").strip()
-        if gate:
-            peer = self.client_address[0] if self.client_address else ""
-            if peer in {"127.0.0.1", "::1", "::ffff:127.0.0.1"} and self.headers.get("X-Gate-Token") == gate:
-                return True
+        peer = self.client_address[0] if self.client_address else ""
+        if gate and peer in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}:
+            # 门模式：服务只听回环，能走到这里的只有本机进程与门本身 ⇒ 信任。
+            # （非 loopback 的 X-Gate-Token **不认** —— 能伪造的头不算凭据。）
+            return True
         return False
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
@@ -628,8 +634,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.token is not None:
         config.token = args.token
 
-    if not config.token:
-        print("拒绝启动：没有 token（设 FETCHSCRIPT_TOKEN，或 install.sh 生成 /etc/fetchscript/env）")
+    if not config.token and not os.getenv("FETCHSCRIPT_GATE_TOKEN", "").strip():
+        print(
+            "拒绝启动：既没有 FETCHSCRIPT_TOKEN，也没有 FETCHSCRIPT_GATE_TOKEN（统一门）。\n"
+            "按房子规矩：自研服务要么挂在统一认证门后面（推荐），要么自带 token —— 不允许裸奔。"
+        )
         return 2
 
     httpd = build_server(config)

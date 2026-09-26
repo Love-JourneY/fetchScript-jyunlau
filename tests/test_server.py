@@ -231,32 +231,104 @@ def test_delete_missing_file(tmp_path: Path) -> None:
     assert FetchscriptServer(config).delete_file("nope.mp4") == "not_found"
 
 
-def test_gate_token_accepted_only_from_loopback(monkeypatch, tmp_path) -> None:
-    """统一认证门（port-gate）转发时注入 X-Gate-Token；只有 loopback 才认。"""
-    config = ServerConfig(bind="127.0.0.1", port=0, token="secret", media_dir=tmp_path / "media")
+def test_loopback_trusted_in_gate_mode(monkeypatch, tmp_path) -> None:
+    """统一门模型：本机(loopback)访问即信任（服务只听回环；网络侧只能经门）。"""
+    config = ServerConfig(bind="127.0.0.1", port=0, token="", media_dir=tmp_path / "media")
     from fetchscript.server import _Handler
 
-    _Handler.app = FetchscriptServer(config)   # 给基类挂上 app（真实运行时由 build_server 绑定子类）
-
+    _Handler.app = FetchscriptServer(config)
     monkeypatch.setenv("FETCHSCRIPT_GATE_TOKEN", "gate-shared")
 
-    class Fake(_Handler):
-        def __init__(self):  # noqa: D107 - 只测鉴权逻辑
-            self.headers = {"X-Gate-Token": "gate-shared"}
-            self.client_address = ("127.0.0.1", 1234)
+    class Local(_Handler):
+        def __init__(self):
+            self.headers = {}
+            self.client_address = ("127.0.0.1", 1)
 
-    assert Fake()._token_ok({}) is True
+    assert Local()._token_ok({}) is True
 
     class Lan(_Handler):
         def __init__(self):
-            self.headers = {"X-Gate-Token": "gate-shared"}
-            self.client_address = ("192.168.31.9", 1234)
+            self.headers = {}
+            self.client_address = ("192.168.31.9", 1)
 
     assert Lan()._token_ok({}) is False
 
-    class WrongHeader(_Handler):
-        def __init__(self):
-            self.headers = {"X-Gate-Token": "nope"}
-            self.client_address = ("127.0.0.1", 1234)
 
-    assert WrongHeader()._token_ok({}) is False
+def test_gate_header_required_from_lan_even_with_token(monkeypatch, tmp_path) -> None:
+    """非 loopback + 门令牌头正确 + 已配 token ⇒ 放行（纵深）；token 不对则拒。"""
+    config = ServerConfig(bind="127.0.0.1", port=0, token="tok", media_dir=tmp_path / "media")
+    from fetchscript.server import _Handler
+
+    _Handler.app = FetchscriptServer(config)
+    monkeypatch.setenv("FETCHSCRIPT_GATE_TOKEN", "gate-shared")
+
+    class LanGood(_Handler):
+        def __init__(self):
+            self.headers = {"X-Token": "tok"}
+            self.client_address = ("192.168.31.9", 1)
+
+    class LanBad(_Handler):
+        def __init__(self):
+            self.headers = {"X-Token": "nope"}
+            self.client_address = ("192.168.31.9", 1)
+
+    assert LanGood()._token_ok({}) is True
+    assert LanBad()._token_ok({}) is False
+
+
+def _handler_with(app, peer, headers):
+    from fetchscript.server import _Handler
+
+    _Handler.app = app
+
+    class Fake(_Handler):
+        def __init__(self):
+            self.headers = headers
+            self.client_address = peer
+
+    return Fake()
+
+
+def test_auth_contract(monkeypatch, tmp_path) -> None:
+    """统一门契约（Nija 2026-09-25 定）：
+    ① 门模式 + 本机(loopback) ⇒ 放行（服务只听回环，网络侧只能经门）
+    ② 独立模式 + 无 token ⇒ 本机也要凭证（不许裸奔）
+    ③ 非 loopback 只认 token；**能伪造的 X-Gate-Token 不算凭据**
+    """
+    # ① 门模式
+    gate_app = FetchscriptServer(ServerConfig(bind="127.0.0.1", port=0, token="", media_dir=tmp_path / "m1"))
+    monkeypatch.setenv("FETCHSCRIPT_GATE_TOKEN", "gate-shared")
+    assert _handler_with(gate_app, ("127.0.0.1", 1), {})._token_ok({}) is True
+    assert _handler_with(gate_app, ("192.168.31.9", 1), {"X-Gate-Token": "gate-shared"})._token_ok({}) is False
+
+    # ② 独立模式（没配门）
+    monkeypatch.delenv("FETCHSCRIPT_GATE_TOKEN", raising=False)
+    solo_app = FetchscriptServer(ServerConfig(bind="127.0.0.1", port=0, token="tok", media_dir=tmp_path / "m2"))
+    assert _handler_with(solo_app, ("127.0.0.1", 1), {})._token_ok({}) is False
+    assert _handler_with(solo_app, ("127.0.0.1", 1), {"X-Token": "tok"})._token_ok({}) is True
+    # ③ 非 loopback
+    assert _handler_with(solo_app, ("192.168.31.9", 1), {"X-Token": "tok"})._token_ok({}) is True
+    assert _handler_with(solo_app, ("192.168.31.9", 1), {"X-Token": "nope"})._token_ok({}) is False
+
+
+def test_index_script_parses() -> None:
+    """页面内联 JS 必须能过语法闸门 —— 一个引号写错会让**整页 JS 报废**（只显示横幅，实测踩过）。"""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    from fetchscript.server import PAGE
+
+    script = re.search(r"<script>(.*)</script>", PAGE, re.S)
+    assert script is not None
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("没有 node，跳过 JS 语法检查")
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
+        handle.write(script.group(1))
+        path = handle.name
+    result = subprocess.run([node, "--check", path], capture_output=True, text=True)  # noqa: S603
+    assert result.returncode == 0, result.stderr[:400]
