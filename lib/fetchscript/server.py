@@ -328,12 +328,13 @@ PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 </div>
 <script>
 // 密码模式：优先用 URL 里的 k（老书签），否则用本机记住的密码
+const BASE = '__BASE__';   // 门注入的前缀（如 /fs）；独立部署时为空
 let K = new URLSearchParams(location.search).get('k') || localStorage.getItem('fetchscript_pw') || '';
 document.getElementById('k').textContent = K ? '已登录' : '';
 async function login(){
   const pw = document.getElementById('pw').value;
   if(!pw) return;
-  const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})});
+  const r = await fetch(BASE+'/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})});
   if(r.ok){ localStorage.setItem('fetchscript_pw', pw); K = pw; showApp(); }
   else { document.getElementById('gateMsg').textContent = '密码不对'; }
 }
@@ -349,7 +350,7 @@ function logout(){
   document.getElementById('gate').style.display='block';
 }
 async function api(path, body){
-  const r = await fetch(path + (K?('?k='+encodeURIComponent(K)):''), {method:'POST',
+  const r = await fetch(BASE + path + (K?('?k='+encodeURIComponent(K)):''), {method:'POST',
     headers:{'Content-Type':'application/json','X-Token':K}, body: JSON.stringify(body||{})});
   const j = await r.json().catch(()=>({error:'非 JSON 响应', status:r.status}));
   if (r.status === 401) {
@@ -371,7 +372,7 @@ async function go(kind){
   if(kind==='download') setTimeout(load, 1500);
 }
 async function loadFiles(){
-  const r = await fetch('/api/files'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
+  const r = await fetch(BASE+'/api/files'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
   if(!r.ok) return;
   const j = await r.json();
   const el = document.getElementById('files');
@@ -379,7 +380,7 @@ async function loadFiles(){
   const fmt = n => n>1048576 ? (n/1048576).toFixed(1)+'MB' : (n/1024).toFixed(0)+'KB';
   if(!(j.files||[]).length){ el.innerHTML += '<div class="stage">（空）</div>'; return; }
   (j.files||[]).forEach(f=>{
-    const url = '/files/'+encodeURIComponent(f.name)+(K?('?k='+encodeURIComponent(K)):'');
+    const url = BASE+'/files/'+encodeURIComponent(f.name)+(K?('?k='+encodeURIComponent(K)):'');
     const when = new Date(f.mtime*1000).toLocaleString();
     el.innerHTML += '<div class="card"><div><a href="'+url+'">'+f.name+'</a></div>'
       + '<div class="stage">'+fmt(f.size)+' · '+when+'</div>'
@@ -390,14 +391,14 @@ async function loadFiles(){
 }
 async function delFile(name){
   if(!confirm('确定删除「'+name+'」？删了就没了。')) return;
-  const r = await fetch('/api/files/delete'+(K?('?k='+encodeURIComponent(K)):''), {method:'POST',
+  const r = await fetch(BASE+'/api/files/delete'+(K?('?k='+encodeURIComponent(K)):''), {method:'POST',
     headers:{'Content-Type':'application/json','X-Token':K}, body: JSON.stringify({name})});
   if(!r.ok){ alert('删除失败：'+(await r.text()).slice(0,120)); }
   loadFiles();
 }
 async function load(){
   loadFiles();
-  const r = await fetch('/api/jobs'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
+  const r = await fetch(BASE+'/api/jobs'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
   const j = await r.json();
   const el = document.getElementById('jobs'); el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">下载记录</h1>';
   (j.jobs||[]).forEach(x=>{
@@ -419,13 +420,13 @@ async function load(){
 // 统一认证门（port-gate）已经在前面验过并把凭证注入进来时，这里直接就通了，
 // 于是**不再要求用户输第二遍密码**（这就是单点登录在本页的落点）。
 async function probeGate(){
-  const r = await fetch('/api/jobs', {headers:{'X-Token': K || ''}}).catch(()=>null);
+  const r = await fetch(BASE+'/api/jobs', {headers:{'X-Token': K || ''}}).catch(()=>null);
   return !!(r && r.ok);
 }
 (async () => {
   if (await probeGate()) { showApp(); return; }
   if (K) {
-    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: K})}).catch(()=>null);
+    const r = await fetch(BASE+'/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: K})}).catch(()=>null);
     if (r && r.ok) { showApp(); return; }
     localStorage.removeItem('fetchscript_pw'); K='';
   }
@@ -503,9 +504,15 @@ class _Handler(BaseHTTPRequestHandler):
             body = (
                 PAGE.replace("__VERSION__", __version__)
                 .replace("__BANNER__", banner)
+                .replace("__BASE__", forwarded_prefix(self.headers))
                 .encode()
             )
             self._send(200, body, "text/html; charset=utf-8")
+            return
+        if parsed.path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         if parsed.path == "/api/health":
             self._json(
@@ -594,6 +601,20 @@ def build_server(config: ServerConfig) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((config.bind, config.port), handler)
     httpd.daemon_threads = True
     return httpd
+
+
+_PREFIX_RE = re.compile(r"^(?:/[A-Za-z0-9._~-]+)*$")
+
+
+def forwarded_prefix(headers) -> str:
+    """取门注入的 `X-Forwarded-Prefix`（如 `/fs`）——服务据此生成正确链接。
+
+    **必须净化**：只接受 `/seg/seg` 形式，绝不允许 `..`（否则等于让代理指定路径穿越）。
+    """
+    raw = (headers.get("X-Forwarded-Prefix") or "").strip()
+    if not raw or raw == "/" or ".." in raw:
+        return ""
+    return raw.rstrip("/") if _PREFIX_RE.match(raw.rstrip("/")) else ""
 
 
 def _lan_addresses() -> list[str]:

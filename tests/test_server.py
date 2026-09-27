@@ -343,3 +343,23 @@ def test_load_refreshes_file_list() -> None:
     body = re.search(r"async function load\(\)\{(.*?)\n\}", PAGE, re.S)
     assert body is not None
     assert "loadFiles();" in body.group(1), "load() 里必须调用 loadFiles()"
+
+
+def test_forwarded_prefix_sanitized() -> None:
+    """门注入的前缀必须净化：只接受 /seg 形式，`..` 一律拒绝（否则等于代理能指定穿越）。"""
+    from fetchscript.server import forwarded_prefix
+
+    assert forwarded_prefix({"X-Forwarded-Prefix": "/fs"}) == "/fs"
+    assert forwarded_prefix({"X-Forwarded-Prefix": "/fs/"}) == "/fs"
+    assert forwarded_prefix({"X-Forwarded-Prefix": "/a/b"}) == "/a/b"
+    assert forwarded_prefix({"X-Forwarded-Prefix": "/"}) == ""
+    assert forwarded_prefix({"X-Forwarded-Prefix": "../etc"}) == ""
+    assert forwarded_prefix({"X-Forwarded-Prefix": "/a/../../b"}) == ""
+    assert forwarded_prefix({}) == ""
+
+
+def test_page_uses_base_for_api_calls() -> None:
+    from fetchscript.server import PAGE
+
+    assert "const BASE = '__BASE__'" in PAGE
+    assert PAGE.count("fetch(BASE") >= 5
