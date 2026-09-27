@@ -396,6 +396,7 @@ async function delFile(name){
   loadFiles();
 }
 async function load(){
+  loadFiles();
   const r = await fetch('/api/jobs'+(K?('?k='+encodeURIComponent(K)):''), {headers:{'X-Token':K}});
   const j = await r.json();
   const el = document.getElementById('jobs'); el.innerHTML = '<h1 style="font-size:16px;margin-top:20px">下载记录</h1>';

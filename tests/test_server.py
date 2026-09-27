@@ -332,3 +332,14 @@ def test_index_script_parses() -> None:
         path = handle.name
     result = subprocess.run([node, "--check", path], capture_output=True, text=True)  # noqa: S603
     assert result.returncode == 0, result.stderr[:400]
+
+
+def test_load_refreshes_file_list() -> None:
+    """文件清单必须在 `load()` 里刷新 —— 漏了这行会"AI 以为加了、页面永远是空的"（实测踩过）。"""
+    import re
+
+    from fetchscript.server import PAGE
+
+    body = re.search(r"async function load\(\)\{(.*?)\n\}", PAGE, re.S)
+    assert body is not None
+    assert "loadFiles();" in body.group(1), "load() 里必须调用 loadFiles()"
